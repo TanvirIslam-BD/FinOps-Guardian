@@ -1,4 +1,3 @@
-import os
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 
@@ -14,7 +13,6 @@ def get_session():
     try:
         return get_active_session()
     except Exception:
-        import snowflake.connector
         conn = st.connection("snowflake")
         return conn.session()
 
@@ -23,6 +21,7 @@ session = get_session()
 
 DB = "FINOPS_GUARDIAN"
 SCHEMA = "PUBLIC"
+CREDIT_RATE = 3.00  # $/credit (Snowflake Enterprise)
 
 
 def run_query(sql):
@@ -33,7 +32,7 @@ def run_query(sql):
 st.title("FinOps Guardian")
 st.caption("AI-powered Snowflake warehouse cost monitoring & anomaly detection")
 
-# --- Section 1: Summary Metrics ---
+# --- Section 1: Summary Metrics with $ savings ---
 summary = run_query(f"""
     SELECT
         COUNT(*) AS total_anomalies,
@@ -43,42 +42,86 @@ summary = run_query(f"""
     FROM {DB}.{SCHEMA}.USAGE_ANOMALIES
 """)
 
-col1, col2, col3, col4 = st.columns(4)
 total_wasted = float(summary["TOTAL_CREDITS_WASTED"].iloc[0] or 0)
 credits_saved = float(summary["CREDITS_SAVED"].iloc[0] or 0)
-col1.metric("Total Anomalies Detected", int(summary["TOTAL_ANOMALIES"].iloc[0]))
-col2.metric("Credits Wasted", f"{total_wasted:.4f}")
-col3.metric("Potential Savings (Resolved)", f"{credits_saved:.4f}")
-col4.metric("Open Issues", int(summary["OPEN_ISSUES"].iloc[0]))
+dollar_saved = credits_saved * CREDIT_RATE
+annual_projection = dollar_saved * 365  # rough daily->annual
+
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Anomalies Detected", int(summary["TOTAL_ANOMALIES"].iloc[0]))
+col2.metric("Credits Wasted", f"{total_wasted:.2f}")
+col3.metric("Credits Saved", f"{credits_saved:.2f}")
+col4.metric("$ Saved", f"${dollar_saved:,.2f}")
+col5.metric("Open Issues", int(summary["OPEN_ISSUES"].iloc[0]))
 
 st.divider()
 
-# --- Section 2: Anomaly Chart by Warehouse ---
-st.subheader("Anomalies by Warehouse & Type")
+# --- Section 2: Anomaly Chart + Cost Trend Timeline ---
+chart_col1, chart_col2 = st.columns(2)
 
-chart_data = run_query(f"""
-    SELECT WAREHOUSE_NAME, ANOMALY_TYPE, COUNT(*) AS COUNT, SUM(CREDITS_WASTED) AS CREDITS
-    FROM {DB}.{SCHEMA}.USAGE_ANOMALIES
-    GROUP BY WAREHOUSE_NAME, ANOMALY_TYPE
-    ORDER BY CREDITS DESC
-""")
-
-if not chart_data.empty:
-    col_chart, col_table = st.columns([2, 1])
-    with col_chart:
+with chart_col1:
+    st.subheader("Anomalies by Warehouse")
+    chart_data = run_query(f"""
+        SELECT WAREHOUSE_NAME, ANOMALY_TYPE, COUNT(*) AS COUNT, SUM(CREDITS_WASTED) AS CREDITS
+        FROM {DB}.{SCHEMA}.USAGE_ANOMALIES
+        GROUP BY WAREHOUSE_NAME, ANOMALY_TYPE
+        ORDER BY CREDITS DESC
+    """)
+    if not chart_data.empty:
         pivot = chart_data.pivot_table(
             index="WAREHOUSE_NAME", columns="ANOMALY_TYPE",
             values="CREDITS", aggfunc="sum"
         ).fillna(0)
         st.bar_chart(pivot)
-    with col_table:
-        st.dataframe(chart_data, use_container_width=True)
-else:
-    st.info("No anomalies detected yet. Run detection procedures to populate data.")
+    else:
+        st.info("No anomalies detected yet.")
+
+with chart_col2:
+    st.subheader("Credit Usage Timeline")
+    timeline = run_query(f"""
+        SELECT START_TIME AS HOUR, WAREHOUSE_NAME, CREDITS_USED
+        FROM {DB}.{SCHEMA}.WAREHOUSE_METERING_TEST
+        ORDER BY HOUR
+    """)
+    if not timeline.empty:
+        pivot_time = timeline.pivot_table(
+            index="HOUR", columns="WAREHOUSE_NAME",
+            values="CREDITS_USED", aggfunc="sum"
+        ).fillna(0)
+        st.line_chart(pivot_time)
+    else:
+        st.info("No timeline data available.")
 
 st.divider()
 
-# --- Section 3: Pending Approvals (HIGH/CRITICAL) ---
+# --- Section 3: Real-Time Warehouse Status ---
+st.subheader("Warehouse Status (Live)")
+
+try:
+    session.sql("SHOW WAREHOUSES").collect()
+    wh_raw = run_query("""
+        SELECT "name" AS WAREHOUSE, "state" AS STATUS, "size" AS SIZE,
+               "auto_suspend" AS AUTO_SUSPEND_SEC, "running" AS RUNNING, "queued" AS QUEUED
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+    """)
+    if not wh_raw.empty:
+        def state_icon(s):
+            if s == "STARTED":
+                return "🟢 RUNNING"
+            elif s == "SUSPENDED":
+                return "⏸️ SUSPENDED"
+            return s
+
+        wh_raw["STATUS"] = wh_raw["STATUS"].apply(state_icon)
+        st.dataframe(wh_raw, use_container_width=True)
+    else:
+        st.info("No warehouses found.")
+except Exception as e:
+    st.warning(f"Could not fetch warehouse status: {e}")
+
+st.divider()
+
+# --- Section 4: Pending Approvals with AI Insights ---
 st.subheader("Pending Approvals")
 st.caption("HIGH and CRITICAL severity fixes require human approval before application.")
 
@@ -106,9 +149,25 @@ if not pending.empty:
         with pcol1:
             st.markdown(f"**{row['WAREHOUSE_NAME']}** — {row['ANOMALY_TYPE']}")
             st.text(row["DESCRIPTION"])
+            dollar_risk = float(row["CREDITS_WASTED"]) * CREDIT_RATE
+            st.caption(f"Severity: **{row['SEVERITY']}** | Credits: {float(row['CREDITS_WASTED']):.2f} | **${dollar_risk:.2f}**")
         with pcol2:
             st.code(row["PROPOSED_FIX"], language="sql")
-            st.caption(f"Severity: **{row['SEVERITY']}** | Credits at risk: {float(row['CREDITS_WASTED']):.4f}")
+            # AI Insight
+            try:
+                import snowflake.cortex as cortex
+                prompt = (
+                    "You are a FinOps expert. In 3 concise bullet points, provide: "
+                    "1) Likely root cause, 2) Recommended action, 3) Impact if not addressed. "
+                    f"Anomaly: {row['DESCRIPTION']}. "
+                    f"Type: {row['ANOMALY_TYPE']}, Severity: {row['SEVERITY']}, "
+                    f"Credits at risk: {float(row['CREDITS_WASTED']):.2f}"
+                )
+                insight = cortex.Complete("mistral-large2", prompt)
+                st.markdown("**AI Analysis:**")
+                st.markdown(insight)
+            except Exception:
+                pass
         with pcol3:
             anomaly_id = int(row["ANOMALY_ID"])
             if st.button("Approve", key=f"approve_{anomaly_id}", type="primary"):
@@ -130,12 +189,37 @@ if not pending.empty:
                 """).collect()
                 st.warning(f"Dismissed anomaly {anomaly_id}")
                 st.experimental_rerun()
+
+        # Query-level drilldown for cost spikes
+        if row["ANOMALY_TYPE"] == "COST_SPIKE":
+            with st.expander("View queries during spike window"):
+                try:
+                    spike_queries = run_query(f"""
+                        SELECT
+                            QUERY_ID,
+                            USER_NAME,
+                            EXECUTION_STATUS,
+                            ROUND(TOTAL_ELAPSED_TIME/1000, 1) AS DURATION_SEC,
+                            ROUND(CREDITS_USED_CLOUD_SERVICES, 4) AS CREDITS,
+                            SUBSTR(QUERY_TEXT, 1, 120) AS QUERY_PREVIEW
+                        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+                        WHERE WAREHOUSE_NAME = '{row['WAREHOUSE_NAME']}'
+                          AND START_TIME >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+                        ORDER BY TOTAL_ELAPSED_TIME DESC
+                        LIMIT 5
+                    """)
+                    if not spike_queries.empty:
+                        st.dataframe(spike_queries, use_container_width=True)
+                    else:
+                        st.info("No query history available for this window (demo data).")
+                except Exception as e:
+                    st.info(f"Query history not available: {e}")
 else:
     st.success("No pending approvals. All high-severity issues have been addressed.")
 
 st.divider()
 
-# --- Section 4: Recently Auto-Applied Fixes ---
+# --- Section 5: Recently Auto-Applied Fixes ---
 st.subheader("Auto-Applied Fixes (LOW/MEDIUM)")
 
 auto_fixes = run_query(f"""
@@ -144,6 +228,7 @@ auto_fixes = run_query(f"""
         l.WAREHOUSE_NAME,
         a.ANOMALY_TYPE,
         a.SEVERITY,
+        ROUND(a.CREDITS_WASTED * {CREDIT_RATE}, 2) AS DOLLAR_SAVED,
         l.ACTION_DETAILS,
         l.SQL_EXECUTED
     FROM {DB}.{SCHEMA}.AUDIT_LOG l
@@ -161,10 +246,9 @@ else:
 
 st.divider()
 
-# --- Section 5: Full Audit Log ---
+# --- Section 6: Full Audit Log ---
 st.subheader("Audit Log")
 
-# Filters
 fcol1, fcol2, fcol3 = st.columns(3)
 with fcol1:
     warehouses = run_query(f"""
@@ -192,7 +276,7 @@ where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
 audit_log = run_query(f"""
     SELECT LOG_ID, LOGGED_AT, ACTION_TYPE, ANOMALY_ID, WAREHOUSE_NAME,
-           ACTION_DETAILS, SQL_EXECUTED, APPROVED_BY, STATUS, ERROR_MESSAGE
+           ACTION_DETAILS, SQL_EXECUTED, APPROVED_BY, STATUS
     FROM {DB}.{SCHEMA}.AUDIT_LOG
     {where_sql}
     ORDER BY LOGGED_AT DESC
@@ -201,7 +285,7 @@ audit_log = run_query(f"""
 
 st.dataframe(audit_log, use_container_width=True)
 
-# --- Sidebar: Run Detection ---
+# --- Sidebar: Agent Controls ---
 with st.sidebar:
     st.header("Agent Controls")
     st.caption("Run detection scans and apply fixes manually.")
@@ -222,4 +306,17 @@ with st.sidebar:
         st.experimental_rerun()
 
     st.divider()
-    st.caption("FinOps Guardian v0.1 | Hackathon Demo")
+    st.subheader("Demo Controls")
+
+    if st.button("Reset Demo", use_container_width=True):
+        session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.USAGE_ANOMALIES").collect()
+        session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.AUDIT_LOG").collect()
+        session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
+        session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
+        session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
+        st.success("Demo reset! 9 auto-resolved + 1 pending approval ready.")
+        st.experimental_rerun()
+
+    st.divider()
+    st.markdown(f"**Credit Rate:** ${CREDIT_RATE:.2f}/credit")
+    st.caption("FinOps Guardian v0.2 | Hackathon Demo")
