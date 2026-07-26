@@ -1,0 +1,13 @@
+definition_version: 2
+entities:
+  finops_guardian:
+    type: streamlit
+    identifier:
+      name: FINOPS_GUARDIAN_APP
+      schema: PUBLIC
+      database: FINOPS_GUARDIAN
+    title: "FinOps Guardian"
+    query_warehouse: COMPUTE_WH
+    main_file: streamlit_app.py
+    artifacts:
+      - streamlit_app.py

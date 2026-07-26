@@ -1,0 +1,11 @@
+[project]
+name = "finops-guardian"
+version = "0.1.0"
+description = "AI-powered Snowflake FinOps monitoring dashboard"
+requires-python = ">=3.9"
+dependencies = [
+    "streamlit>=1.31.0",
+    "snowflake-snowpark-python>=1.11.0",
+    "snowflake-connector-python>=3.6.0",
+    "pandas>=2.0.0",
+]
