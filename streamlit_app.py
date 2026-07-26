@@ -32,7 +32,7 @@ def run_query(sql):
 st.title("FinOps Guardian")
 st.caption("AI-powered Snowflake warehouse cost monitoring & anomaly detection")
 
-# --- Section 1: Summary Metrics with $ savings ---
+# --- Section 1: Summary Metrics ---
 summary = run_query(f"""
     SELECT
         COUNT(*) AS total_anomalies,
@@ -45,7 +45,6 @@ summary = run_query(f"""
 total_wasted = float(summary["TOTAL_CREDITS_WASTED"].iloc[0] or 0)
 credits_saved = float(summary["CREDITS_SAVED"].iloc[0] or 0)
 dollar_saved = credits_saved * CREDIT_RATE
-annual_projection = dollar_saved * 365  # rough daily->annual
 
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Anomalies Detected", int(summary["TOTAL_ANOMALIES"].iloc[0]))
@@ -56,7 +55,55 @@ col5.metric("Open Issues", int(summary["OPEN_ISSUES"].iloc[0]))
 
 st.divider()
 
-# --- Section 2: Anomaly Chart + Cost Trend Timeline ---
+# --- Section 2: Savings Trend + Week-over-Week ---
+trend_col, wow_col = st.columns(2)
+
+with trend_col:
+    st.subheader("Savings Trend (7 Days)")
+    savings = run_query(f"""
+        SELECT SNAPSHOT_DATE, DOLLAR_SAVED, TOTAL_CREDITS_SAVED
+        FROM {DB}.{SCHEMA}.SAVINGS_HISTORY
+        ORDER BY SNAPSHOT_DATE
+    """)
+    if not savings.empty:
+        savings = savings.set_index("SNAPSHOT_DATE")
+        st.line_chart(savings[["DOLLAR_SAVED"]])
+    else:
+        st.info("No savings history yet.")
+
+with wow_col:
+    st.subheader("Week-over-Week")
+    try:
+        wow = run_query(f"""
+            SELECT WAREHOUSE_NAME,
+                   SUM(CASE WHEN START_TIME >= DATE_TRUNC('week', CURRENT_DATE) THEN CREDITS_USED ELSE 0 END) AS THIS_WEEK,
+                   SUM(CASE WHEN START_TIME >= DATEADD('week', -1, DATE_TRUNC('week', CURRENT_DATE))
+                             AND START_TIME < DATE_TRUNC('week', CURRENT_DATE) THEN CREDITS_USED ELSE 0 END) AS LAST_WEEK
+            FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+            WHERE START_TIME >= DATEADD('week', -2, CURRENT_DATE)
+              AND WAREHOUSE_NAME != 'CLOUD_SERVICES_ONLY'
+            GROUP BY WAREHOUSE_NAME
+            HAVING THIS_WEEK > 0 OR LAST_WEEK > 0
+            ORDER BY THIS_WEEK DESC
+        """)
+        if not wow.empty:
+            for _, row in wow.iterrows():
+                this_w = float(row["THIS_WEEK"] or 0)
+                last_w = float(row["LAST_WEEK"] or 0)
+                if last_w > 0:
+                    pct = ((this_w - last_w) / last_w) * 100
+                    delta_str = f"{pct:+.1f}%"
+                else:
+                    delta_str = "new"
+                st.metric(row["WAREHOUSE_NAME"], f"{this_w:.2f} credits", delta_str)
+        else:
+            st.info("Not enough history for comparison.")
+    except Exception:
+        st.info("Week-over-week requires ACCOUNT_USAGE access.")
+
+st.divider()
+
+# --- Section 3: Charts ---
 chart_col1, chart_col2 = st.columns(2)
 
 with chart_col1:
@@ -94,7 +141,37 @@ with chart_col2:
 
 st.divider()
 
-# --- Section 3: Real-Time Warehouse Status ---
+# --- Section 4: Cost Attribution by User/Role ---
+st.subheader("Cost Attribution (Top Users - Last 7 Days)")
+
+try:
+    attribution = run_query("""
+        SELECT USER_NAME, ROLE_NAME,
+               COUNT(*) AS QUERIES,
+               ROUND(SUM(CREDITS_USED_CLOUD_SERVICES), 4) AS CREDITS,
+               ROUND(SUM(CREDITS_USED_CLOUD_SERVICES) * 3.00, 2) AS DOLLARS
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+        WHERE START_TIME >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+          AND CREDITS_USED_CLOUD_SERVICES > 0
+        GROUP BY USER_NAME, ROLE_NAME
+        ORDER BY CREDITS DESC
+        LIMIT 10
+    """)
+    if not attribution.empty:
+        attr_col1, attr_col2 = st.columns([2, 1])
+        with attr_col1:
+            attr_pivot = attribution.set_index("USER_NAME")[["DOLLARS"]]
+            st.bar_chart(attr_pivot)
+        with attr_col2:
+            st.dataframe(attribution[["USER_NAME", "ROLE_NAME", "QUERIES", "DOLLARS"]], use_container_width=True)
+    else:
+        st.info("No query cost data in the last 7 days.")
+except Exception:
+    st.info("Cost attribution requires ACCOUNT_USAGE access.")
+
+st.divider()
+
+# --- Section 5: Warehouse Status (Live) ---
 st.subheader("Warehouse Status (Live)")
 
 try:
@@ -121,24 +198,18 @@ except Exception as e:
 
 st.divider()
 
-# --- Section 4: Pending Approvals with AI Insights ---
+# --- Section 6: Pending Approvals ---
 st.subheader("Pending Approvals")
-st.caption("HIGH and CRITICAL severity fixes require human approval before application.")
+st.caption("HIGH and CRITICAL severity fixes require human approval.")
 
 pending = run_query(f"""
     SELECT
-        a.ANOMALY_ID,
-        a.WAREHOUSE_NAME,
-        a.ANOMALY_TYPE,
-        a.SEVERITY,
-        a.CREDITS_WASTED,
-        a.DESCRIPTION,
-        l.SQL_EXECUTED AS PROPOSED_FIX,
-        l.ACTION_DETAILS
+        a.ANOMALY_ID, a.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
+        a.CREDITS_WASTED, a.DESCRIPTION,
+        l.SQL_EXECUTED AS PROPOSED_FIX, l.ACTION_DETAILS
     FROM {DB}.{SCHEMA}.USAGE_ANOMALIES a
     JOIN {DB}.{SCHEMA}.AUDIT_LOG l ON l.ANOMALY_ID = a.ANOMALY_ID
-    WHERE a.STATUS = 'ACKNOWLEDGED'
-      AND l.STATUS = 'PENDING_APPROVAL'
+    WHERE a.STATUS = 'ACKNOWLEDGED' AND l.STATUS = 'PENDING_APPROVAL'
     ORDER BY a.CREDITS_WASTED DESC
 """)
 
@@ -153,15 +224,14 @@ if not pending.empty:
             st.caption(f"Severity: **{row['SEVERITY']}** | Credits: {float(row['CREDITS_WASTED']):.2f} | **${dollar_risk:.2f}**")
         with pcol2:
             st.code(row["PROPOSED_FIX"], language="sql")
-            # AI Insight
             try:
                 import snowflake.cortex as cortex
                 prompt = (
-                    "You are a FinOps expert. In 3 concise bullet points, provide: "
-                    "1) Likely root cause, 2) Recommended action, 3) Impact if not addressed. "
+                    "You are a FinOps expert. In 3 concise bullet points: "
+                    "1) Root cause, 2) Fix, 3) Impact if ignored. "
                     f"Anomaly: {row['DESCRIPTION']}. "
                     f"Type: {row['ANOMALY_TYPE']}, Severity: {row['SEVERITY']}, "
-                    f"Credits at risk: {float(row['CREDITS_WASTED']):.2f}"
+                    f"Credits: {float(row['CREDITS_WASTED']):.2f}"
                 )
                 insight = cortex.Complete("mistral-large2", prompt)
                 st.markdown("**AI Analysis:**")
@@ -171,72 +241,48 @@ if not pending.empty:
         with pcol3:
             anomaly_id = int(row["ANOMALY_ID"])
             if st.button("Approve", key=f"approve_{anomaly_id}", type="primary"):
-                session.sql(
-                    f"CALL {DB}.{SCHEMA}.APPROVE_FIX({anomaly_id}, CURRENT_USER())"
-                ).collect()
-                st.success(f"Approved anomaly {anomaly_id}")
+                session.sql(f"CALL {DB}.{SCHEMA}.APPROVE_FIX({anomaly_id}, CURRENT_USER())").collect()
+                st.success(f"Approved!")
                 st.experimental_rerun()
             if st.button("Dismiss", key=f"dismiss_{anomaly_id}"):
-                session.sql(f"""
-                    UPDATE {DB}.{SCHEMA}.USAGE_ANOMALIES
-                    SET STATUS = 'DISMISSED'
-                    WHERE ANOMALY_ID = {anomaly_id}
-                """).collect()
-                session.sql(f"""
-                    UPDATE {DB}.{SCHEMA}.AUDIT_LOG
-                    SET STATUS = 'COMPLETED', APPROVED_BY = CURRENT_USER()
-                    WHERE ANOMALY_ID = {anomaly_id} AND STATUS = 'PENDING_APPROVAL'
-                """).collect()
-                st.warning(f"Dismissed anomaly {anomaly_id}")
+                session.sql(f"UPDATE {DB}.{SCHEMA}.USAGE_ANOMALIES SET STATUS='DISMISSED' WHERE ANOMALY_ID={anomaly_id}").collect()
+                session.sql(f"UPDATE {DB}.{SCHEMA}.AUDIT_LOG SET STATUS='COMPLETED', APPROVED_BY=CURRENT_USER() WHERE ANOMALY_ID={anomaly_id} AND STATUS='PENDING_APPROVAL'").collect()
                 st.experimental_rerun()
 
-        # Query-level drilldown for cost spikes
         if row["ANOMALY_TYPE"] == "COST_SPIKE":
             with st.expander("View queries during spike window"):
                 try:
                     spike_queries = run_query(f"""
-                        SELECT
-                            QUERY_ID,
-                            USER_NAME,
-                            EXECUTION_STATUS,
-                            ROUND(TOTAL_ELAPSED_TIME/1000, 1) AS DURATION_SEC,
-                            ROUND(CREDITS_USED_CLOUD_SERVICES, 4) AS CREDITS,
-                            SUBSTR(QUERY_TEXT, 1, 120) AS QUERY_PREVIEW
+                        SELECT QUERY_ID, USER_NAME, EXECUTION_STATUS,
+                               ROUND(TOTAL_ELAPSED_TIME/1000, 1) AS DURATION_SEC,
+                               SUBSTR(QUERY_TEXT, 1, 120) AS QUERY_PREVIEW
                         FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
                         WHERE WAREHOUSE_NAME = '{row['WAREHOUSE_NAME']}'
                           AND START_TIME >= DATEADD('day', -7, CURRENT_TIMESTAMP())
-                        ORDER BY TOTAL_ELAPSED_TIME DESC
-                        LIMIT 5
+                        ORDER BY TOTAL_ELAPSED_TIME DESC LIMIT 5
                     """)
                     if not spike_queries.empty:
                         st.dataframe(spike_queries, use_container_width=True)
                     else:
-                        st.info("No query history available for this window (demo data).")
-                except Exception as e:
-                    st.info(f"Query history not available: {e}")
+                        st.info("No query history available (demo data).")
+                except Exception:
+                    st.info("Query history not available.")
 else:
     st.success("No pending approvals. All high-severity issues have been addressed.")
 
 st.divider()
 
-# --- Section 5: Recently Auto-Applied Fixes ---
+# --- Section 7: Auto-Applied Fixes ---
 st.subheader("Auto-Applied Fixes (LOW/MEDIUM)")
 
 auto_fixes = run_query(f"""
-    SELECT
-        l.LOGGED_AT,
-        l.WAREHOUSE_NAME,
-        a.ANOMALY_TYPE,
-        a.SEVERITY,
-        ROUND(a.CREDITS_WASTED * {CREDIT_RATE}, 2) AS DOLLAR_SAVED,
-        l.ACTION_DETAILS,
-        l.SQL_EXECUTED
+    SELECT l.LOGGED_AT, l.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
+           ROUND(a.CREDITS_WASTED * {CREDIT_RATE}, 2) AS DOLLAR_SAVED,
+           l.ACTION_DETAILS, l.SQL_EXECUTED
     FROM {DB}.{SCHEMA}.AUDIT_LOG l
     JOIN {DB}.{SCHEMA}.USAGE_ANOMALIES a ON a.ANOMALY_ID = l.ANOMALY_ID
-    WHERE l.ACTION_TYPE = 'AUTO_ACTION'
-      AND l.STATUS = 'COMPLETED'
-    ORDER BY l.LOGGED_AT DESC
-    LIMIT 20
+    WHERE l.ACTION_TYPE = 'AUTO_ACTION' AND l.STATUS = 'COMPLETED'
+    ORDER BY l.LOGGED_AT DESC LIMIT 20
 """)
 
 if not auto_fixes.empty:
@@ -246,7 +292,7 @@ else:
 
 st.divider()
 
-# --- Section 6: Full Audit Log ---
+# --- Section 8: Audit Log ---
 st.subheader("Audit Log")
 
 fcol1, fcol2, fcol3 = st.columns(3)
@@ -277,18 +323,16 @@ where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 audit_log = run_query(f"""
     SELECT LOG_ID, LOGGED_AT, ACTION_TYPE, ANOMALY_ID, WAREHOUSE_NAME,
            ACTION_DETAILS, SQL_EXECUTED, APPROVED_BY, STATUS
-    FROM {DB}.{SCHEMA}.AUDIT_LOG
-    {where_sql}
-    ORDER BY LOGGED_AT DESC
-    LIMIT 50
+    FROM {DB}.{SCHEMA}.AUDIT_LOG {where_sql}
+    ORDER BY LOGGED_AT DESC LIMIT 50
 """)
 
 st.dataframe(audit_log, use_container_width=True)
 
-# --- Sidebar: Agent Controls ---
+# --- Sidebar ---
 with st.sidebar:
     st.header("Agent Controls")
-    st.caption("Run detection scans and apply fixes manually.")
+    st.caption("Run detection scans and apply fixes.")
 
     if st.button("Run Idle Compute Detection", use_container_width=True):
         result = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
@@ -306,6 +350,28 @@ with st.sidebar:
         st.experimental_rerun()
 
     st.divider()
+    st.subheader("AI Assistant")
+    user_q = st.text_input("Ask about your costs...")
+    if user_q:
+        try:
+            import snowflake.cortex as cortex
+            context_df = run_query(f"""
+                SELECT WAREHOUSE_NAME, ANOMALY_TYPE, SEVERITY, CREDITS_WASTED, STATUS, DESCRIPTION
+                FROM {DB}.{SCHEMA}.USAGE_ANOMALIES ORDER BY DETECTED_AT DESC LIMIT 15
+            """)
+            context = context_df.to_string(index=False)
+            prompt = (
+                "You are FinOps Guardian AI assistant. Answer concisely based on this anomaly data:\n"
+                f"{context}\n\n"
+                f"Credit rate: ${CREDIT_RATE}/credit.\n"
+                f"Question: {user_q}"
+            )
+            answer = cortex.Complete("mistral-large2", prompt)
+            st.markdown(answer)
+        except Exception as e:
+            st.error(f"AI error: {e}")
+
+    st.divider()
     st.subheader("Demo Controls")
 
     if st.button("Reset Demo", use_container_width=True):
@@ -319,4 +385,4 @@ with st.sidebar:
 
     st.divider()
     st.markdown(f"**Credit Rate:** ${CREDIT_RATE:.2f}/credit")
-    st.caption("FinOps Guardian v0.2 | Hackathon Demo")
+    st.caption("FinOps Guardian v0.3 | Hackathon Demo")
