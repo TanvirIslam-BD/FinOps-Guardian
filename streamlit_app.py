@@ -34,7 +34,12 @@ def run_query(sql):
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/f/ff/Snowflake_Logo.svg/200px-Snowflake_Logo.svg.png", width=40)
     st.title("FinOps Guardian")
-    st.caption("v0.4 | AI-Powered Cost Intelligence")
+    st.caption("v0.5 | AI-Powered Cost Intelligence")
+
+    # Notification Bell
+    notif_count = run_query(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.NOTIFICATIONS WHERE IS_READ = FALSE")
+    unread = int(notif_count["CNT"].iloc[0])
+    notif_label = f"Notifications ({unread})" if unread > 0 else "Notifications"
 
     st.divider()
     tab_choice = st.radio("Navigation", [
@@ -42,6 +47,7 @@ with st.sidebar:
         "Operations",
         "Intelligence",
         "Compliance",
+        "Notifications",
         "Audit Trail"
     ], label_visibility="collapsed")
 
@@ -63,6 +69,7 @@ with st.sidebar:
     if st.button("Reset Demo", use_container_width=True):
         session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.USAGE_ANOMALIES").collect()
         session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.AUDIT_LOG").collect()
+        session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.NOTIFICATIONS").collect()
         session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
         session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
         session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
@@ -447,7 +454,71 @@ elif tab_choice == "Compliance":
         st.error(f"Could not run compliance checks: {e}")
 
 # ============================================================
-# TAB 5: AUDIT TRAIL
+# TAB 5: NOTIFICATIONS
+# ============================================================
+elif tab_choice == "Notifications":
+    st.header("Notifications")
+
+    # Unread count
+    notifs = run_query(f"""
+        SELECT NOTIFICATION_ID, CREATED_AT, NOTIFICATION_TYPE, TITLE, MESSAGE,
+               WAREHOUSE_NAME, IS_READ
+        FROM {DB}.{SCHEMA}.NOTIFICATIONS
+        ORDER BY CREATED_AT DESC
+        LIMIT 30
+    """)
+
+    unread_notifs = notifs[notifs["IS_READ"] == False] if not notifs.empty else notifs
+    read_notifs = notifs[notifs["IS_READ"] == True] if not notifs.empty else notifs
+
+    # Mark all as read button
+    n1, n2 = st.columns([3, 1])
+    with n1:
+        st.caption(f"{len(unread_notifs)} unread notifications")
+    with n2:
+        if st.button("Mark all as read"):
+            session.sql(f"UPDATE {DB}.{SCHEMA}.NOTIFICATIONS SET IS_READ = TRUE WHERE IS_READ = FALSE").collect()
+            st.experimental_rerun()
+
+    st.divider()
+
+    if notifs.empty:
+        st.info("No notifications yet. Run detection scans and apply fixes to generate notifications.")
+    else:
+        # Unread section
+        if not unread_notifs.empty:
+            st.subheader("Unread")
+            for _, n in unread_notifs.iterrows():
+                ntype = n["NOTIFICATION_TYPE"]
+                if ntype == "APPROVAL_NEEDED":
+                    icon = "🔴"
+                elif ntype == "APPROVED":
+                    icon = "🟢"
+                else:
+                    icon = "🔵"
+
+                st.markdown(f"""
+**{icon} {n['TITLE']}**
+{n['MESSAGE']}
+<small style="color: #888;">{n['CREATED_AT']} | {n['WAREHOUSE_NAME']}</small>
+""", unsafe_allow_html=True)
+                st.markdown("---")
+
+        # Read section
+        if not read_notifs.empty:
+            with st.expander(f"Earlier ({len(read_notifs)} read)"):
+                for _, n in read_notifs.iterrows():
+                    ntype = n["NOTIFICATION_TYPE"]
+                    if ntype == "APPROVAL_NEEDED":
+                        icon = "🔴"
+                    elif ntype == "APPROVED":
+                        icon = "🟢"
+                    else:
+                        icon = "🔵"
+                    st.markdown(f"**{icon} {n['TITLE']}** - {n['MESSAGE']}")
+
+# ============================================================
+# TAB 6: AUDIT TRAIL
 # ============================================================
 elif tab_choice == "Audit Trail":
     st.header("Audit Trail")
