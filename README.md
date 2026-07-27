@@ -1,8 +1,16 @@
 # FinOps Guardian
 
-AI-powered Snowflake warehouse cost monitoring and anomaly detection agent with automated remediation, human-in-the-loop approval, and a full audit trail.
+AI-powered Snowflake warehouse cost monitoring and anomaly detection agent with automated remediation, human-in-the-loop approval, natural language alerts, and a full audit trail.
 
 ## Features
+
+### Executive Summary Dashboard
+
+- **Real-time KPI cards** -- Anomalies detected, credits wasted, dollars saved, open issues, CO2 avoided
+- **Savings Trend** -- 7-day line chart showing cumulative dollar savings over time
+- **Anomalies by Warehouse** -- Bar chart grouping cost spikes and idle compute by warehouse
+- **Warehouse Health Scores** -- Live health scoring (0-100) for each warehouse with status badges
+- **Environmental Impact** -- Energy saved, CO2 avoided, equivalent trees metrics
 
 ### Detection Engine
 
@@ -16,10 +24,52 @@ AI-powered Snowflake warehouse cost monitoring and anomaly detection agent with 
 - **LOW/MEDIUM severity** -- Auto-applied immediately (e.g., `ALTER WAREHOUSE SET AUTO_SUSPEND = 60`)
 - **HIGH/CRITICAL severity** -- Queued as `PENDING_APPROVAL` with human-in-the-loop approval
 
+### Smart Alerts -- Natural Language (AI-Powered)
+
+- **Plain English rules** -- Create monitoring alerts using natural language (e.g., "Notify me if any warehouse spends more than $50 per day")
+- **Cortex AI parsing** -- Rules are parsed by Snowflake Cortex AI (Mistral Large 2) into structured JSON with metric, threshold, warehouse, and condition
+- **Visual rule display** -- Parsed alert rules shown as colored tags for metric, threshold, and target warehouse
+- **Active alerts management** -- View, activate, and delete alerts from the UI
+- **Persistent storage** -- Alerts stored in `SMART_ALERTS` table with trigger tracking
+
 ### AI-Powered Insights (Cortex AI)
 
 - **Anomaly Analysis** -- Each pending anomaly gets a Cortex LLM-generated root cause analysis, recommended action, and impact assessment
 - **AI Chat Assistant** -- Ask natural language questions about your costs (e.g., "what's wasting the most money?") and get answers grounded in your anomaly data
+- **Cost Attribution** -- AI-enhanced breakdown of credit consumption by user/role
+- **Week-over-Week Analysis** -- Per-warehouse credit usage with % change indicators
+
+### Operations Center
+
+- **Real-time warehouse status** -- Live view of all warehouses (RUNNING/SUSPENDED, size, auto-suspend, queued queries)
+- **Auto-fix history** -- Timeline of all automated remediation actions taken
+- **Query-level drilldown** -- For cost spikes, shows the actual expensive queries that caused it
+
+### Human-in-the-Loop Approvals
+
+- **Pending recommendations** -- HIGH/CRITICAL fixes queued for manual review
+- **AI analysis per anomaly** -- Cortex-generated root cause, recommendation, and impact before you approve
+- **One-click approve** -- Apply the recommended fix with full audit logging
+- **Recently approved** -- History of past approvals with timestamps
+
+### Policy Compliance
+
+- **Auto-suspend checks** -- Validates all warehouses have appropriate auto-suspend timeouts
+- **Warehouse sizing** -- Flags oversized warehouses that could be downsized
+- **Compliance scoring** -- Overall pass rate with severity-tagged findings
+- **Policy recommendations** -- Actionable SQL to remediate non-compliant configurations
+
+### Notifications
+
+- **In-app notification center** -- All system events displayed with severity badges
+- **Read/unread tracking** -- Mark individual or all notifications as read
+- **Severity filtering** -- INFO, WARNING, ERROR, CRITICAL with color-coded badges
+
+### Audit Trail
+
+- **Full action history** -- Every detection, recommendation, approval, and auto-fix logged
+- **Filterable log** -- Filter by warehouse, status, and action type
+- **Statistics dashboard** -- Total entries, auto actions, manual actions, pending count
 
 ### Scheduled Monitoring
 
@@ -27,32 +77,31 @@ AI-powered Snowflake warehouse cost monitoring and anomaly detection agent with 
 - **Automated fix application** -- Downstream task applies fixes after detection completes
 - **Email alerts** -- HIGH/CRITICAL severity anomalies trigger email notifications via Snowflake notification integration
 
-### Executive Reporting
+### Performance Optimizations
 
-- **Dollar savings** -- All metrics converted to $ at configurable credit rate ($3/credit default)
-- **Savings trend** -- 7-day line chart showing cumulative savings over time (ROI proof)
-- **Week-over-week comparison** -- Per-warehouse credit usage with % change indicators
-- **Cost attribution** -- Top users/roles by credit consumption from QUERY_HISTORY
-
-### Operational Visibility
-
-- **Real-time warehouse status** -- Live view of all warehouses (RUNNING/SUSPENDED, size, auto-suspend)
-- **Query-level drilldown** -- For cost spikes, shows the actual expensive queries that caused it
-- **Full audit log** -- Every detection, recommendation, and action logged with who/what/when
-- **Filterable history** -- Filter audit log by warehouse, status, and action type
+- **Query caching** -- All read-only dashboard queries cached with 120s TTL for instant tab switching
+- **Single-click navigation** -- Immediate tab switching with `experimental_rerun()`
+- **Smooth transitions** -- CSS animations for content loading (fadeIn)
+- **Light theme enforcement** -- Forced light theme via `config.toml` for consistent rendering
 
 ### Demo Controls
 
 - **One-click reset** -- Wipe and re-seed all data for a clean live demo
-- **Manual scan buttons** -- Trigger detection and fix application on demand
+- **Quick Actions** -- Upload Scan (detect idle), Explorer (detect spikes), New Scan (apply fixes)
+- **Scan profiles** -- Configurable scan presets
 
 ## Architecture
 
 ```
 +-----------------------------------------------------------+
 |                    Streamlit Dashboard                      |
-|  KPIs | Savings Trend | WoW | Attribution | Approvals     |
-|  AI Chat | Warehouse Status | Audit Log                   |
+|  Executive Summary | Operations | Approvals | Intelligence |
+|  Compliance | Notifications | Audit Trail                 |
++-----------------------------+-----------------------------+
+                              |
++-----------------------------v-----------------------------+
+|              Cortex AI (Mistral Large 2)                   |
+|  NL Alert Parsing | Chat Assistant | Anomaly Analysis     |
 +-----------------------------+-----------------------------+
                               |
 +-----------------------------v-----------------------------+
@@ -70,7 +119,7 @@ AI-powered Snowflake warehouse cost monitoring and anomaly detection agent with 
 +-----------------------------v-----------------------------+
 |              Snowflake Tables                              |
 |  USAGE_ANOMALIES | AUDIT_LOG | SAVINGS_HISTORY           |
-|  WAREHOUSE_METERING_TEST                                  |
+|  SMART_ALERTS | NOTIFICATIONS | WAREHOUSE_METERING_TEST  |
 +-----------------------------+-----------------------------+
                               |
 +-----------------------------v-----------------------------+
@@ -81,18 +130,20 @@ AI-powered Snowflake warehouse cost monitoring and anomaly detection agent with 
 
 ## Live Demo
 
-The app is deployed to Streamlit-in-Snowflake with sidebar controls for real-time interaction.
+The app is deployed to Streamlit-in-Snowflake with a polished sidebar UI and instant navigation.
 
 **Demo flow for judges:**
 
 1. Click **Reset Demo** -- restores clean state with 9 auto-resolved + 1 pending anomaly
-2. Observe **KPI cards** -- 10 anomalies, $37.40 saved, 1 open issue
+2. Observe **KPI cards** -- 10 anomalies, credits wasted, dollars saved, CO2 avoided
 3. See **Savings Trend** -- 7-day chart showing growing savings
-4. Check **Week-over-Week** -- real warehouse usage comparison
-5. Review **Cost Attribution** -- who's spending the most
-6. Click **Approve** on ETL_WH cost spike -- resolves with AI analysis visible
-7. Ask the **AI Assistant** "what's wasting the most money?" -- get a natural language answer
-8. Show **Audit Log** -- full paper trail of everything that happened
+4. Check **Warehouse Health Scores** -- live health rating for each warehouse
+5. Go to **Operations** -- see real-time warehouse status and auto-fix history
+6. Go to **Approvals** -- review pending HIGH severity anomaly with AI analysis, click Approve
+7. Go to **Intelligence** -- ask the AI "what's wasting the most money?"
+8. Create a **Smart Alert** -- type "Notify me if any warehouse spends more than $50 per day" and see AI parse it
+9. Go to **Compliance** -- see policy check results and recommendations
+10. Show **Audit Trail** -- full paper trail of everything that happened
 
 ## Project Structure
 
@@ -104,7 +155,7 @@ FinOpsGuardian/
 ├── pyproject.toml         # Python dependencies
 ├── README.md              # This file
 └── .streamlit/
-    └── config.toml        # Dark theme with Snowflake blue accent
+    └── config.toml        # Light theme with purple accent
 ```
 
 ## Setup
@@ -112,8 +163,8 @@ FinOpsGuardian/
 ### Prerequisites
 
 - Snowflake account with `ACCOUNTADMIN` role
-- Access to `SNOWFLAKE.ACCOUNT_USAGE` views
-- Cortex AI enabled (for LLM features)
+- Cortex AI enabled (for LLM features -- Mistral Large 2)
+- Warehouse `COMPUTE_WH` available
 
 ### Deploy
 
@@ -142,6 +193,8 @@ ALTER ALERT FINOPS_GUARDIAN.PUBLIC.HIGH_SEVERITY_ALERT RESUME;
 | `USAGE_ANOMALIES` | Table | Detected anomalies with severity, fix, status |
 | `AUDIT_LOG` | Table | Full action history for governance |
 | `SAVINGS_HISTORY` | Table | Daily savings snapshots for trend chart |
+| `SMART_ALERTS` | Table | Natural language alert rules parsed by AI |
+| `NOTIFICATIONS` | Table | In-app notification events |
 | `WAREHOUSE_METERING_TEST` | Table | Synthetic demo data |
 | `DETECT_IDLE_COMPUTE` | Procedure | Scans real account usage for idle warehouses |
 | `DETECT_IDLE_COMPUTE_DEMO` | Procedure | Scans synthetic test data |
@@ -157,9 +210,10 @@ ALTER ALERT FINOPS_GUARDIAN.PUBLIC.HIGH_SEVERITY_ALERT RESUME;
 ## Tech Stack
 
 - **Snowflake** -- Data warehouse, stored procedures, tasks, alerts, Streamlit-in-Snowflake
-- **Cortex AI** -- LLM-powered anomaly analysis and natural language chat assistant
-- **Streamlit** -- Interactive dashboard with real-time controls
+- **Cortex AI (Mistral Large 2)** -- NL alert parsing, anomaly analysis, chat assistant
+- **Streamlit** -- Interactive dashboard with cached queries and instant navigation
 - **SQL** -- All detection logic runs natively in Snowflake (zero external compute)
+- **CSS/HTML** -- Custom-styled KPI cards, navigation, health scores, alert badges
 
 ## License
 
