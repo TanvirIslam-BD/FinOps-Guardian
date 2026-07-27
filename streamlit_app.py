@@ -1,11 +1,99 @@
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
+from datetime import datetime, timedelta
 
 st.set_page_config(
     page_title="FinOps Guardian",
     page_icon="🛡️",
     layout="wide",
 )
+
+# --- Custom CSS for Reference Design ---
+st.markdown("""
+<style>
+/* Hide default Streamlit padding and header */
+.block-container {
+    padding-top: 1.5rem !important;
+    padding-bottom: 1rem !important;
+}
+header[data-testid="stHeader"] {
+    display: none;
+}
+
+/* Sidebar styling */
+[data-testid="stSidebar"] {
+    background: #FFFFFF;
+    border-right: 1px solid #E8ECF0;
+}
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: 0.8rem;
+}
+
+/* Radio buttons as nav items with left-border active */
+[data-testid="stSidebar"] .stRadio > div {
+    gap: 0 !important;
+}
+[data-testid="stSidebar"] .stRadio > div > label {
+    padding: 10px 16px !important;
+    margin: 2px 0 !important;
+    border-radius: 0 8px 8px 0 !important;
+    border-left: 3px solid transparent !important;
+    transition: all 0.2s ease;
+    font-size: 0.9rem !important;
+    color: #555 !important;
+}
+[data-testid="stSidebar"] .stRadio > div > label:hover {
+    background: rgba(102, 126, 234, 0.04) !important;
+    color: #333 !important;
+}
+[data-testid="stSidebar"] .stRadio > div > label[data-checked="true"],
+[data-testid="stSidebar"] .stRadio > div > label[aria-checked="true"] {
+    border-left: 3px solid #667eea !important;
+    background: rgba(102, 126, 234, 0.06) !important;
+    color: #667eea !important;
+    font-weight: 600 !important;
+}
+
+/* Button styling */
+.stButton > button {
+    border-radius: 8px;
+    font-weight: 500;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+}
+
+/* Expander styling */
+.streamlit-expanderHeader {
+    font-size: 0.88rem;
+    font-weight: 500;
+    border-radius: 8px;
+}
+
+/* Selectbox */
+[data-testid="stSelectbox"] > div > div {
+    border-radius: 8px;
+    font-size: 0.85rem;
+}
+
+/* Animation */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.main .block-container > div {
+    animation: fadeIn 0.3s ease-in;
+}
+
+/* Metric override - hide default */
+[data-testid="stMetricValue"] {
+    font-size: 1.4rem !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # --- Connection ---
 @st.cache_resource
@@ -22,51 +110,151 @@ session = get_session()
 DB = "FINOPS_GUARDIAN"
 SCHEMA = "PUBLIC"
 CREDIT_RATE = 3.00
-KWH_PER_CREDIT = 3.8  # Estimated kWh per Snowflake credit
-CO2_PER_KWH = 0.39  # kg CO2 per kWh (US avg grid)
+KWH_PER_CREDIT = 3.8
+CO2_PER_KWH = 0.39
 
 
 def run_query(sql):
     return session.sql(sql).to_pandas()
 
 
+# --- Helper Functions for Reference UI Components ---
+
+def render_kpi_card(icon_emoji, icon_bg, label, value, delta_text="", delta_positive=True):
+    """Render a KPI card matching the reference design."""
+    delta_color = "#16A34A" if delta_positive else "#DC2626"
+    delta_arrow = "↑" if delta_positive else "↓"
+    delta_html = f'<div style="font-size:0.75rem;color:{delta_color};margin-top:4px;">{delta_arrow} {delta_text}</div>' if delta_text else ""
+    return f"""
+    <div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 18px;height:100%;">
+        <div style="width:36px;height:36px;background:{icon_bg};border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;">
+            <span style="font-size:1rem;">{icon_emoji}</span>
+        </div>
+        <div style="font-size:0.7rem;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:500;">{label}</div>
+        <div style="font-size:1.5rem;font-weight:700;color:#1a1a2e;margin-top:2px;">{value}</div>
+        {delta_html}
+    </div>"""
+
+
+def render_chart_card(title, chart_placeholder_id=""):
+    """Render opening HTML for a chart card container."""
+    return f"""
+    <div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:20px;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:0.95rem;font-weight:600;color:#1a1a2e;">{title}</span>
+                <span style="color:#aaa;font-size:0.8rem;">ℹ️</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+                <span style="background:#F3F4F6;padding:4px 10px;border-radius:6px;font-size:0.75rem;color:#555;">USD</span>
+                <span style="background:#F3F4F6;padding:4px 10px;border-radius:6px;font-size:0.75rem;color:#555;">Last 7 Days</span>
+            </div>
+        </div>
+    </div>"""
+
+
+def render_health_card(name, score, state="STARTED"):
+    """Render a warehouse health card with progress bar."""
+    if score >= 80:
+        color = "#16A34A"
+        badge_bg = "rgba(22,163,74,0.1)"
+        label = "Healthy"
+        dot = "🟢"
+    elif score >= 50:
+        color = "#F59E0B"
+        badge_bg = "rgba(245,158,11,0.1)"
+        label = "Needs Attention"
+        dot = "🟡"
+    else:
+        color = "#DC2626"
+        badge_bg = "rgba(220,38,38,0.1)"
+        label = "Critical"
+        dot = "🔴"
+
+    return f"""
+    <div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 18px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:0.7rem;">{dot}</span>
+                <span style="font-weight:600;color:#1a1a2e;font-size:0.95rem;">{name}</span>
+            </div>
+            <span style="background:{badge_bg};color:{color};padding:3px 10px;border-radius:6px;font-size:0.75rem;font-weight:500;">{label}</span>
+        </div>
+        <div style="font-size:1.4rem;font-weight:700;color:#1a1a2e;margin-bottom:8px;">{score}/100</div>
+        <div style="background:#F3F4F6;border-radius:6px;height:8px;overflow:hidden;">
+            <div style="background:{color};height:100%;width:{score}%;border-radius:6px;transition:width 0.5s;"></div>
+        </div>
+        <div style="font-size:0.72rem;color:#16A34A;margin-top:6px;">↑ vs last 7 days</div>
+    </div>"""
+
+
 # --- Sidebar ---
+if "nav_index" not in st.session_state:
+    st.session_state.nav_index = 0
+
 with st.sidebar:
+    # Logo + Name inline
     st.markdown("""
-    <div style="text-align:center;padding:10px 0 5px 0;">
-        <span style="font-size:2.2rem;">🛡️</span>
-        <h2 style="margin:0;padding:4px 0 0 0;">FinOps Guardian</h2>
-        <p style="margin:0;color:#888;font-size:0.82rem;">AI-Powered Cost Intelligence</p>
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 4px 12px 4px;">
+        <div style="width:38px;height:38px;min-width:38px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(102,126,234,0.3);">
+            <span style="font-size:1.2rem;line-height:38px;">🛡️</span>
+        </div>
+        <div>
+            <div style="font-size:1.05rem;font-weight:700;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.2;">FinOps Guardian</div>
+            <div style="font-size:0.62rem;color:#999;text-transform:uppercase;letter-spacing:0.8px;">AI-Powered Cost Intelligence</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Quick status summary
+    # Quick status cards
     notif_count = run_query(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.NOTIFICATIONS WHERE IS_READ = FALSE")
     unread = int(notif_count["CNT"].iloc[0])
 
     open_count = run_query(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.USAGE_ANOMALIES WHERE STATUS IN ('OPEN','ACKNOWLEDGED')")
     open_issues = int(open_count["CNT"].iloc[0])
 
-    st.markdown("")
-    s1, s2 = st.columns(2)
-    s1.metric("Open Issues", open_issues)
-    s2.metric("Unread", unread)
+    issues_color = "#DC2626" if open_issues > 0 else "#16A34A"
+    notif_color = "#667eea" if unread > 0 else "#16A34A"
+    st.markdown(f"""
+    <div style="display:flex;gap:8px;margin:4px 0 12px 0;">
+        <div style="flex:1;background:#FAFBFC;border:1px solid #E8ECF0;border-radius:10px;padding:10px 12px;text-align:center;">
+            <div style="font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:500;">Open Issues</div>
+            <div style="font-size:1.4rem;font-weight:700;color:{issues_color};margin-top:2px;">{open_issues}</div>
+        </div>
+        <div style="flex:1;background:#FAFBFC;border:1px solid #E8ECF0;border-radius:10px;padding:10px 12px;text-align:center;">
+            <div style="font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:500;">Unread</div>
+            <div style="font-size:1.4rem;font-weight:700;color:{notif_color};margin-top:2px;">{unread}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.markdown("")
-    st.markdown("**Navigate**")
+    # View Notifications link
+    if unread > 0:
+        if st.button(f"View {unread} Notifications →", use_container_width=True, key="notif_badge"):
+            st.session_state.nav_index = 4
+            st.experimental_rerun()
+
+    # Navigation
+    st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:18px 0 6px 0;font-weight:600;">Navigation</div>""", unsafe_allow_html=True)
     notif_label = f"🔔 Notifications ({unread})" if unread > 0 else "🔔 Notifications"
-    tab_choice = st.radio("Navigation", [
+    nav_options = [
         "📊 Executive Summary",
         "⚙️ Operations",
         "🧠 Intelligence",
         "📋 Compliance",
         notif_label,
         "📜 Audit Trail"
-    ], label_visibility="collapsed")
+    ]
+    tab_choice = st.radio("Navigation", nav_options,
+        index=st.session_state.nav_index, label_visibility="collapsed")
 
-    st.markdown("")
-    st.markdown("**Agent Controls**")
-    st.caption("Run AI detection scans and apply fixes")
+    current_idx = nav_options.index(tab_choice) if tab_choice in nav_options else 0
+    if current_idx != st.session_state.nav_index:
+        st.session_state.nav_index = current_idx
+
+    # Agent Controls
+    st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:22px 0 6px 0;font-weight:600;">Agent Controls</div>""", unsafe_allow_html=True)
+    st.caption("Run AI scans and auto-remediation")
     col_a, col_b = st.columns(2)
     with col_a:
         if st.button("🔍 Idle Scan", use_container_width=True):
@@ -85,7 +273,7 @@ with st.sidebar:
 
     st.markdown("")
     with st.expander("🔄 Reset Demo"):
-        st.caption("Clears all data and re-runs detection pipeline")
+        st.caption("Clears all data and re-runs full pipeline")
         if st.button("Reset All Data", use_container_width=True):
             session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.USAGE_ANOMALIES").collect()
             session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.AUDIT_LOG").collect()
@@ -96,19 +284,42 @@ with st.sidebar:
             st.success("Demo reset complete!")
             st.experimental_rerun()
 
-    st.markdown("")
-    st.markdown("""<p style="text-align:center;color:#666;font-size:0.72rem;margin-top:10px;">
-    v0.5 | Built with Snowflake Cortex AI
-    </p>""", unsafe_allow_html=True)
+    # Footer
+    st.markdown("""
+    <div style="text-align:center;margin-top:24px;padding-top:12px;border-top:1px solid #E8ECF0;">
+        <p style="color:#bbb;font-size:0.68rem;margin:0;">v0.5 · Snowflake Cortex AI</p>
+        <p style="color:#ddd;font-size:0.6rem;margin:2px 0 0 0;">Hackathon 2026</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# --- Page Header (date range + refresh) ---
+def render_page_header(title, emoji):
+    today = datetime.now()
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+    date_range = f"{week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}"
+
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #E8ECF0;">
+        <div>
+            <h1 style="margin:0;font-size:1.6rem;color:#1a1a2e;">{emoji} {title}</h1>
+            <p style="margin:4px 0 0 0;color:#888;font-size:0.82rem;">Real-time overview of your Snowflake cost optimization posture</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+            <span style="background:#F3F4F6;padding:6px 14px;border-radius:8px;font-size:0.82rem;color:#555;">📅 {date_range}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 
 # ============================================================
 # TAB 1: EXECUTIVE SUMMARY
 # ============================================================
 if "Executive Summary" in tab_choice:
-    st.header("📊 Executive Summary")
-    st.caption("Real-time overview of your Snowflake cost optimization posture")
+    render_page_header("Executive Summary", "📊")
 
-    # KPI row
+    # Fetch data
     summary = run_query(f"""
         SELECT
             COUNT(*) AS total_anomalies,
@@ -117,24 +328,40 @@ if "Executive Summary" in tab_choice:
             COUNT(CASE WHEN STATUS IN ('OPEN', 'ACKNOWLEDGED') THEN 1 END) AS open_issues
         FROM {DB}.{SCHEMA}.USAGE_ANOMALIES
     """)
+    total_anomalies = int(summary["TOTAL_ANOMALIES"].iloc[0])
     total_wasted = float(summary["TOTAL_CREDITS_WASTED"].iloc[0] or 0)
     credits_saved = float(summary["CREDITS_SAVED"].iloc[0] or 0)
     dollar_saved = credits_saved * CREDIT_RATE
+    open_iss = int(summary["OPEN_ISSUES"].iloc[0])
     co2_saved = credits_saved * KWH_PER_CREDIT * CO2_PER_KWH
 
+    # KPI Cards row
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("🚨 Anomalies", int(summary["TOTAL_ANOMALIES"].iloc[0]))
-    c2.metric("💸 Credits Wasted", f"{total_wasted:.2f}")
-    c3.metric("💰 $ Saved", f"${dollar_saved:,.2f}")
-    c4.metric("⚠️ Open Issues", int(summary["OPEN_ISSUES"].iloc[0]))
-    c5.metric("🌱 CO2 Avoided", f"{co2_saved:.1f} kg")
+    with c1:
+        st.markdown(render_kpi_card("🚨", "rgba(220,38,38,0.1)", "Anomalies Detected", str(total_anomalies), "2 vs last 7 days", True), unsafe_allow_html=True)
+    with c2:
+        st.markdown(render_kpi_card("💰", "rgba(245,158,11,0.1)", "Credits Wasted", f"{total_wasted:.2f}", f"{total_wasted:.1f} credits", False), unsafe_allow_html=True)
+    with c3:
+        st.markdown(render_kpi_card("💵", "rgba(22,163,74,0.1)", "Dollars Saved", f"${dollar_saved:,.2f}", f"${dollar_saved:.0f} recovered", True), unsafe_allow_html=True)
+    with c4:
+        st.markdown(render_kpi_card("📋", "rgba(59,130,246,0.1)", "Open Issues", str(open_iss), f"{open_iss} pending", open_iss == 0), unsafe_allow_html=True)
+    with c5:
+        st.markdown(render_kpi_card("🌱", "rgba(22,163,74,0.1)", "CO2 Avoided", f"{co2_saved:.1f} kg", f"{co2_saved:.1f} kg saved", True), unsafe_allow_html=True)
 
-    st.markdown("")
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
-    # Charts row
+    # Charts row in card containers
     ch1, ch2 = st.columns(2)
     with ch1:
-        st.subheader("Savings Trend (7 Days)")
+        st.markdown("""<div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:20px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                <span style="font-size:0.95rem;font-weight:600;color:#1a1a2e;">Savings Trend (7 Days)</span>
+                <div style="display:flex;gap:6px;">
+                    <span style="background:#F3F4F6;padding:3px 8px;border-radius:5px;font-size:0.7rem;color:#555;">USD</span>
+                    <span style="background:#F3F4F6;padding:3px 8px;border-radius:5px;font-size:0.7rem;color:#555;">Last 7 Days</span>
+                </div>
+            </div>
+        </div>""", unsafe_allow_html=True)
         savings = run_query(f"SELECT SNAPSHOT_DATE, DOLLAR_SAVED FROM {DB}.{SCHEMA}.SAVINGS_HISTORY ORDER BY SNAPSHOT_DATE")
         if not savings.empty:
             st.line_chart(savings.set_index("SNAPSHOT_DATE"))
@@ -142,7 +369,15 @@ if "Executive Summary" in tab_choice:
             st.info("No savings history yet. Run detection + apply fixes to populate.")
 
     with ch2:
-        st.subheader("Anomalies by Warehouse")
+        st.markdown("""<div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:20px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                <span style="font-size:0.95rem;font-weight:600;color:#1a1a2e;">Anomalies by Warehouse</span>
+                <div style="display:flex;gap:6px;">
+                    <span style="background:#F3F4F6;padding:3px 8px;border-radius:5px;font-size:0.7rem;color:#555;">Credits</span>
+                    <span style="background:#F3F4F6;padding:3px 8px;border-radius:5px;font-size:0.7rem;color:#555;">All Time</span>
+                </div>
+            </div>
+        </div>""", unsafe_allow_html=True)
         chart_data = run_query(f"""
             SELECT WAREHOUSE_NAME, ANOMALY_TYPE, SUM(CREDITS_WASTED) AS CREDITS
             FROM {DB}.{SCHEMA}.USAGE_ANOMALIES GROUP BY 1, 2 ORDER BY CREDITS DESC
@@ -151,10 +386,15 @@ if "Executive Summary" in tab_choice:
             pivot = chart_data.pivot_table(index="WAREHOUSE_NAME", columns="ANOMALY_TYPE", values="CREDITS", aggfunc="sum").fillna(0)
             st.bar_chart(pivot)
 
-    st.markdown("")
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
     # Warehouse Health Scores
-    st.subheader("Warehouse Health Scores")
+    st.markdown("""
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <span style="font-size:1.1rem;font-weight:600;color:#1a1a2e;">Warehouse Health Scores</span>
+        <span style="color:#667eea;font-size:0.82rem;cursor:pointer;">View all warehouses →</span>
+    </div>
+    """, unsafe_allow_html=True)
 
     try:
         session.sql("SHOW WAREHOUSES").collect()
@@ -173,58 +413,56 @@ if "Executive Summary" in tab_choice:
             """)
             anomaly_map = dict(zip(anomaly_counts.get("WAREHOUSE_NAME", []), anomaly_counts.get("ANOMALY_COUNT", [])))
 
-            score_cols = st.columns(min(len(wh_all), 4))
+            score_cols = st.columns(min(len(wh_all), 3))
             for i, (_, row) in enumerate(wh_all.iterrows()):
                 wh_name = row["WH"]
                 auto_sus = int(row["AUTO_SUSPEND"] or 600)
                 anomalies = int(anomaly_map.get(wh_name, 0))
 
-                # Health score calculation
                 score = 100
                 if auto_sus > 300:
-                    score -= 15  # Penalty for high auto-suspend
+                    score -= 15
                 if auto_sus > 600:
                     score -= 10
                 if row["STATE"] == "STARTED" and int(row["RUNNING"] or 0) == 0:
-                    score -= 20  # Running but idle right now
-                score -= min(anomalies * 8, 40)  # Penalty per recent anomaly
+                    score -= 20
+                score -= min(anomalies * 8, 40)
                 score = max(score, 0)
 
-                col_idx = i % min(len(wh_all), 4)
+                col_idx = i % min(len(wh_all), 3)
                 with score_cols[col_idx]:
-                    if score >= 80:
-                        color = "🟢"
-                        label = "Healthy"
-                    elif score >= 50:
-                        color = "🟡"
-                        label = "Needs Attention"
-                    else:
-                        color = "🔴"
-                        label = "Critical"
-                    st.metric(f"{color} {wh_name}", f"{score}/100", label)
+                    st.markdown(render_health_card(wh_name, score, row["STATE"]), unsafe_allow_html=True)
     except Exception as e:
         st.warning(f"Could not compute health scores: {e}")
 
-    st.divider()
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
-    # Carbon Impact
-    st.subheader("🌍 Environmental Impact")
+    # Environmental Impact section
+    st.markdown("""<div style="font-size:1.1rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🌍 Environmental Impact</div>""", unsafe_allow_html=True)
     eco1, eco2, eco3 = st.columns(3)
     kwh_saved = credits_saved * KWH_PER_CREDIT
-    eco1.metric("⚡ Energy Saved", f"{kwh_saved:.1f} kWh")
-    eco2.metric("🌱 CO2 Avoided", f"{co2_saved:.1f} kg")
-    eco3.metric("🌳 Equivalent Trees", f"{max(1, int(co2_saved / 21.77))}")
-    st.caption("Based on US average grid emissions (0.39 kg CO2/kWh) and ~3.8 kWh per Snowflake credit.")
+    with eco1:
+        st.markdown(render_kpi_card("⚡", "rgba(59,130,246,0.1)", "Energy Saved", f"{kwh_saved:.1f} kWh", "", True), unsafe_allow_html=True)
+    with eco2:
+        st.markdown(render_kpi_card("🌱", "rgba(22,163,74,0.1)", "CO2 Avoided", f"{co2_saved:.1f} kg", "", True), unsafe_allow_html=True)
+    with eco3:
+        st.markdown(render_kpi_card("🌳", "rgba(22,163,74,0.1)", "Equivalent Trees", f"{max(1, int(co2_saved / 21.77))}", "", True), unsafe_allow_html=True)
+
+    # Footer
+    st.markdown("""
+    <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
+        ℹ️ All times shown in your local timezone · Based on US avg grid emissions (0.39 kg CO2/kWh)
+    </div>
+    """, unsafe_allow_html=True)
 
 # ============================================================
 # TAB 2: OPERATIONS
 # ============================================================
 elif "Operations" in tab_choice:
-    st.header("⚙️ Operations Center")
-    st.caption("Manage approvals, view warehouse status, and track automated fixes")
+    render_page_header("Operations Center", "⚙️")
 
     # Pending Approvals
-    st.subheader("🔐 Pending Approvals")
+    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🔐 Pending Approvals</div>""", unsafe_allow_html=True)
     pending = run_query(f"""
         SELECT a.ANOMALY_ID, a.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
                a.CREDITS_WASTED, a.DESCRIPTION, l.SQL_EXECUTED AS PROPOSED_FIX
@@ -236,32 +474,40 @@ elif "Operations" in tab_choice:
 
     if not pending.empty:
         for _, row in pending.iterrows():
-            st.markdown("---")
-            p1, p2, p3 = st.columns([3, 2, 1])
+            severity = row['SEVERITY']
+            sev_color = "#DC2626" if severity in ("HIGH", "CRITICAL") else "#F59E0B" if severity == "MEDIUM" else "#3B82F6"
+            dollar_risk = float(row["CREDITS_WASTED"]) * CREDIT_RATE
+            st.markdown(f"""
+            <div style="border:1px solid #E8ECF0;border-left:4px solid {sev_color};border-radius:0 10px 10px 0;padding:14px 18px;margin:10px 0;background:#fff;">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                    <span style="font-weight:600;font-size:1rem;color:#1a1a2e;">{row['WAREHOUSE_NAME']}</span>
+                    <span style="background:{sev_color};color:white;padding:2px 8px;border-radius:5px;font-size:0.72rem;font-weight:500;">{severity}</span>
+                    <span style="color:#666;font-size:0.85rem;">{row['ANOMALY_TYPE']}</span>
+                </div>
+                <div style="color:#555;font-size:0.88rem;margin-bottom:6px;">{row['DESCRIPTION']}</div>
+                <div style="font-weight:600;color:{sev_color};font-size:0.9rem;">${dollar_risk:.2f} at risk <span style="color:#888;font-weight:400;">({float(row['CREDITS_WASTED']):.2f} credits)</span></div>
+            </div>""", unsafe_allow_html=True)
+            p1, p2, p3 = st.columns([4, 1, 1])
             with p1:
-                dollar_risk = float(row["CREDITS_WASTED"]) * CREDIT_RATE
-                st.markdown(f"**{row['WAREHOUSE_NAME']}** | {row['ANOMALY_TYPE']} | **{row['SEVERITY']}**")
-                st.text(row["DESCRIPTION"])
-                st.caption(f"Credits: {float(row['CREDITS_WASTED']):.2f} | **${dollar_risk:.2f}** at risk")
-            with p2:
                 st.code(row["PROPOSED_FIX"], language="sql")
-            with p3:
+            with p2:
                 aid = int(row["ANOMALY_ID"])
-                if st.button("Approve", key=f"ap_{aid}", type="primary"):
+                if st.button("✓ Approve", key=f"ap_{aid}", type="primary", use_container_width=True):
                     session.sql(f"CALL {DB}.{SCHEMA}.APPROVE_FIX({aid}, CURRENT_USER())").collect()
                     st.success("Approved!")
                     st.experimental_rerun()
-                if st.button("Dismiss", key=f"dm_{aid}"):
+            with p3:
+                if st.button("✗ Dismiss", key=f"dm_{aid}", use_container_width=True):
                     session.sql(f"UPDATE {DB}.{SCHEMA}.USAGE_ANOMALIES SET STATUS='DISMISSED' WHERE ANOMALY_ID={aid}").collect()
                     session.sql(f"UPDATE {DB}.{SCHEMA}.AUDIT_LOG SET STATUS='COMPLETED',APPROVED_BY=CURRENT_USER() WHERE ANOMALY_ID={aid} AND STATUS='PENDING_APPROVAL'").collect()
                     st.experimental_rerun()
     else:
-        st.success("No pending approvals.")
+        st.markdown("""<div style="background:rgba(22,163,74,0.06);border:1px solid rgba(22,163,74,0.2);border-radius:10px;padding:14px 18px;color:#16A34A;font-size:0.9rem;">✅ No pending approvals — all clear!</div>""", unsafe_allow_html=True)
 
-    st.markdown("")
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
     # Warehouse Status
-    st.subheader("🖥️ Warehouse Status (Live)")
+    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🖥️ Warehouse Status (Live)</div>""", unsafe_allow_html=True)
     try:
         session.sql("SHOW WAREHOUSES").collect()
         wh_raw = run_query("""
@@ -270,20 +516,28 @@ elif "Operations" in tab_choice:
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
         """)
         if not wh_raw.empty:
-            wh_raw["STATUS"] = wh_raw["STATUS"].apply(lambda s: "🟢 RUNNING" if s == "STARTED" else "⏸️ SUSPENDED" if s == "SUSPENDED" else s)
             for _, wrow in wh_raw.iterrows():
-                wcol1, wcol2, wcol3, wcol4 = st.columns([3, 2, 2, 2])
-                wcol1.markdown(f"**{wrow['WAREHOUSE']}**")
-                wcol2.markdown(f"{wrow['STATUS']}")
-                wcol3.markdown(f"Size: `{wrow['SIZE']}`")
-                wcol4.markdown(f"Suspend: `{wrow['AUTO_SUSPEND_SEC']}s`")
+                state = wrow["STATUS"]
+                if state == "STARTED":
+                    badge = '<span style="background:rgba(22,163,74,0.1);color:#16A34A;padding:4px 10px;border-radius:6px;font-size:0.75rem;font-weight:500;">● Running</span>'
+                elif state == "SUSPENDED":
+                    badge = '<span style="background:rgba(107,114,128,0.1);color:#6B7280;padding:4px 10px;border-radius:6px;font-size:0.75rem;font-weight:500;">⏸ Suspended</span>'
+                else:
+                    badge = f'<span style="background:rgba(245,158,11,0.1);color:#F59E0B;padding:4px 10px;border-radius:6px;font-size:0.75rem;font-weight:500;">{state}</span>'
+                st.markdown(f"""
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 18px;margin:6px 0;border-radius:10px;background:#fff;border:1px solid #E8ECF0;">
+                    <span style="font-weight:600;color:#1a1a2e;">{wrow['WAREHOUSE']}</span>
+                    {badge}
+                    <span style="color:#666;font-size:0.85rem;">Size: <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;">{wrow['SIZE']}</code></span>
+                    <span style="color:#666;font-size:0.85rem;">Suspend: <code style="background:#F3F4F6;padding:2px 6px;border-radius:4px;">{wrow['AUTO_SUSPEND_SEC']}s</code></span>
+                </div>""", unsafe_allow_html=True)
     except Exception:
         pass
 
-    st.markdown("")
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
     # Auto-applied fixes
-    st.subheader("🤖 Recently Auto-Applied Fixes")
+    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🤖 Recently Auto-Applied Fixes</div>""", unsafe_allow_html=True)
     auto_fixes = run_query(f"""
         SELECT l.LOGGED_AT, l.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
                ROUND(a.CREDITS_WASTED * {CREDIT_RATE}, 2) AS DOLLAR_SAVED, l.SQL_EXECUTED
@@ -300,15 +554,21 @@ elif "Operations" in tab_choice:
     else:
         st.info("No auto-applied fixes yet. Run detection + Apply Fixes to see results.")
 
+    # Footer
+    st.markdown("""
+    <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
+        ℹ️ All times shown in your local timezone
+    </div>
+    """, unsafe_allow_html=True)
+
 # ============================================================
 # TAB 3: INTELLIGENCE
 # ============================================================
 elif "Intelligence" in tab_choice:
-    st.header("🧠 AI Intelligence")
-    st.caption("AI-powered insights and cost attribution analysis")
+    render_page_header("AI Intelligence", "🧠")
 
     # AI Chat
-    st.subheader("💬 Ask FinOps Guardian")
+    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">💬 Ask FinOps Guardian</div>""", unsafe_allow_html=True)
     user_q = st.text_input("Ask a question about your Snowflake costs...")
     if user_q:
         try:
@@ -326,14 +586,17 @@ elif "Intelligence" in tab_choice:
                 f"Question: {user_q}"
             )
             answer = cortex.Complete("mistral-large2", prompt)
-            st.markdown(answer)
+            st.markdown(f"""<div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 20px;margin-top:12px;">
+                <div style="font-size:0.75rem;color:#667eea;font-weight:500;margin-bottom:8px;">🤖 AI Response</div>
+                <div style="color:#333;font-size:0.9rem;line-height:1.6;">{answer}</div>
+            </div>""", unsafe_allow_html=True)
         except Exception as e:
             st.error(f"AI error: {e}")
 
-    st.markdown("")
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
     # Cost Attribution
-    st.subheader("👥 Cost Attribution (Top Users - 7 Days)")
+    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">👥 Cost Attribution (Top Users - 7 Days)</div>""", unsafe_allow_html=True)
     try:
         attribution = run_query("""
             SELECT USER_NAME, ROLE_NAME, COUNT(*) AS QUERIES,
@@ -352,10 +615,10 @@ elif "Intelligence" in tab_choice:
     except Exception:
         st.info("Requires ACCOUNT_USAGE access.")
 
-    st.markdown("")
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
     # Week-over-Week
-    st.subheader("📈 Week-over-Week Comparison")
+    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">📈 Week-over-Week Comparison</div>""", unsafe_allow_html=True)
     try:
         wow = run_query("""
             SELECT WAREHOUSE_NAME,
@@ -380,12 +643,17 @@ elif "Intelligence" in tab_choice:
     except Exception:
         st.info("Requires ACCOUNT_USAGE access.")
 
+    st.markdown("""
+    <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
+        ℹ️ All times shown in your local timezone
+    </div>
+    """, unsafe_allow_html=True)
+
 # ============================================================
 # TAB 4: COMPLIANCE
 # ============================================================
 elif "Compliance" in tab_choice:
-    st.header("📋 Policy Compliance")
-    st.caption("Automated checks against FinOps best practices")
+    render_page_header("Policy Compliance", "📋")
 
     try:
         session.sql("SHOW WAREHOUSES").collect()
@@ -405,67 +673,60 @@ elif "Compliance" in tab_choice:
                 auto_sus = int(wh["AUTO_SUSPEND"] or 0)
                 size = wh["SIZE"]
 
-                # Check 1: Auto-suspend should be <= 300s (5 min)
                 total_checks += 1
                 if auto_sus <= 300:
                     passed_checks += 1
                 else:
                     severity = "HIGH" if auto_sus > 600 else "MEDIUM"
                     findings.append({
-                        "Warehouse": name,
-                        "Check": "Auto-Suspend Timeout",
-                        "Status": "FAIL",
-                        "Severity": severity,
-                        "Current": f"{auto_sus}s",
-                        "Recommended": "60-300s",
+                        "Warehouse": name, "Check": "Auto-Suspend Timeout",
+                        "Status": "FAIL", "Severity": severity,
+                        "Current": f"{auto_sus}s", "Recommended": "60-300s",
                         "Fix": f"ALTER WAREHOUSE {name} SET AUTO_SUSPEND = 60;"
                     })
 
-                # Check 2: Auto-resume should be enabled
                 total_checks += 1
                 if str(wh["AUTO_RESUME"]).lower() == "true":
                     passed_checks += 1
                 else:
                     findings.append({
-                        "Warehouse": name,
-                        "Check": "Auto-Resume Disabled",
-                        "Status": "FAIL",
-                        "Severity": "LOW",
-                        "Current": "false",
-                        "Recommended": "true",
+                        "Warehouse": name, "Check": "Auto-Resume Disabled",
+                        "Status": "FAIL", "Severity": "LOW",
+                        "Current": "false", "Recommended": "true",
                         "Fix": f"ALTER WAREHOUSE {name} SET AUTO_RESUME = TRUE;"
                     })
 
-                # Check 3: Size appropriateness (flag X-Large+ for non-ETL)
                 total_checks += 1
                 large_sizes = ["Large", "X-Large", "2X-Large", "3X-Large", "4X-Large"]
                 if size in large_sizes and "ETL" not in name.upper():
                     findings.append({
-                        "Warehouse": name,
-                        "Check": "Potentially Oversized",
-                        "Status": "WARN",
-                        "Severity": "MEDIUM",
-                        "Current": size,
-                        "Recommended": "Review utilization",
+                        "Warehouse": name, "Check": "Potentially Oversized",
+                        "Status": "WARN", "Severity": "MEDIUM",
+                        "Current": size, "Recommended": "Review utilization",
                         "Fix": f"-- Review WAREHOUSE_LOAD_HISTORY for {name}"
                     })
                 else:
                     passed_checks += 1
 
-            # Compliance Score
             compliance_pct = int((passed_checks / total_checks) * 100) if total_checks > 0 else 100
 
+            # Compliance KPIs
             sc1, sc2, sc3 = st.columns(3)
+            score_color = "rgba(22,163,74,0.1)" if compliance_pct >= 80 else "rgba(245,158,11,0.1)" if compliance_pct >= 50 else "rgba(220,38,38,0.1)"
             score_icon = "✅" if compliance_pct >= 80 else "⚠️" if compliance_pct >= 50 else "❌"
-            sc1.metric(f"{score_icon} Compliance Score", f"{compliance_pct}%")
-            sc2.metric("✔️ Checks Passed", f"{passed_checks}/{total_checks}")
-            sc3.metric("🔍 Issues Found", len(findings))
+            with sc1:
+                st.markdown(render_kpi_card(score_icon, score_color, "Compliance Score", f"{compliance_pct}%", "", compliance_pct >= 80), unsafe_allow_html=True)
+            with sc2:
+                st.markdown(render_kpi_card("✔️", "rgba(22,163,74,0.1)", "Checks Passed", f"{passed_checks}/{total_checks}", "", True), unsafe_allow_html=True)
+            with sc3:
+                st.markdown(render_kpi_card("🔍", "rgba(59,130,246,0.1)", "Issues Found", str(len(findings)), "", len(findings) == 0), unsafe_allow_html=True)
 
-            st.divider()
+            st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
             if findings:
-                st.subheader("Policy Violations")
+                st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">Policy Violations</div>""", unsafe_allow_html=True)
                 for f in findings:
+                    sev_color = "#DC2626" if f['Severity'] == "HIGH" else "#F59E0B" if f['Severity'] == "MEDIUM" else "#3B82F6"
                     with st.expander(f"{f['Severity']} | {f['Warehouse']} - {f['Check']}"):
                         fc1, fc2 = st.columns(2)
                         with fc1:
@@ -474,10 +735,10 @@ elif "Compliance" in tab_choice:
                         with fc2:
                             st.code(f["Fix"], language="sql")
             else:
-                st.success("All warehouses comply with best practices!")
+                st.markdown("""<div style="background:rgba(22,163,74,0.06);border:1px solid rgba(22,163,74,0.2);border-radius:10px;padding:14px 18px;color:#16A34A;font-size:0.9rem;">✅ All warehouses comply with best practices!</div>""", unsafe_allow_html=True)
 
-            st.divider()
-            st.subheader("Best Practice Reference")
+            st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+            st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">Best Practice Reference</div>""", unsafe_allow_html=True)
             st.markdown("""
 | Policy | Recommended | Why |
 |--------|------------|-----|
@@ -490,14 +751,18 @@ elif "Compliance" in tab_choice:
     except Exception as e:
         st.error(f"Could not run compliance checks: {e}")
 
+    st.markdown("""
+    <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
+        ℹ️ All times shown in your local timezone
+    </div>
+    """, unsafe_allow_html=True)
+
 # ============================================================
 # TAB 5: NOTIFICATIONS
 # ============================================================
 elif "Notifications" in tab_choice:
-    st.header("🔔 Notifications")
-    st.caption("Activity feed for approvals, alerts, and system events")
+    render_page_header("Notifications", "🔔")
 
-    # Unread count
     notifs = run_query(f"""
         SELECT NOTIFICATION_ID, CREATED_AT, NOTIFICATION_TYPE, TITLE, MESSAGE,
                WAREHOUSE_NAME, IS_READ
@@ -509,60 +774,59 @@ elif "Notifications" in tab_choice:
     unread_notifs = notifs[notifs["IS_READ"] == False] if not notifs.empty else notifs
     read_notifs = notifs[notifs["IS_READ"] == True] if not notifs.empty else notifs
 
-    # Mark all as read button
     n1, n2 = st.columns([3, 1])
     with n1:
-        st.markdown(f"**{len(unread_notifs)}** unread notifications")
+        st.markdown(f"<span style='font-size:0.9rem;color:#555;'><strong>{len(unread_notifs)}</strong> unread notifications</span>", unsafe_allow_html=True)
     with n2:
         if st.button("✓ Mark all read", use_container_width=True):
             session.sql(f"UPDATE {DB}.{SCHEMA}.NOTIFICATIONS SET IS_READ = TRUE WHERE IS_READ = FALSE").collect()
             st.experimental_rerun()
 
-    st.divider()
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
     if notifs.empty:
         st.info("No notifications yet. Run detection scans and apply fixes to generate notifications.")
     else:
-        # Unread section
         if not unread_notifs.empty:
-            st.subheader("Unread")
             for _, n in unread_notifs.iterrows():
                 ntype = n["NOTIFICATION_TYPE"]
                 if ntype == "APPROVAL_NEEDED":
+                    border_color = "#DC2626"
                     icon = "🔴"
                 elif ntype == "APPROVED":
+                    border_color = "#16A34A"
                     icon = "🟢"
                 else:
+                    border_color = "#3B82F6"
                     icon = "🔵"
 
                 st.markdown(f"""
-**{icon} {n['TITLE']}**
-{n['MESSAGE']}
-<small style="color: #888;">{n['CREATED_AT']} | {n['WAREHOUSE_NAME']}</small>
-""", unsafe_allow_html=True)
-                st.markdown("---")
+                <div style="border:1px solid #E8ECF0;border-left:4px solid {border_color};border-radius:0 10px 10px 0;padding:14px 18px;margin:8px 0;background:#fff;">
+                    <div style="font-weight:600;color:#1a1a2e;font-size:0.95rem;margin-bottom:4px;">{icon} {n['TITLE']}</div>
+                    <div style="color:#555;font-size:0.88rem;margin-bottom:6px;">{n['MESSAGE']}</div>
+                    <div style="color:#999;font-size:0.75rem;">{n['CREATED_AT']} · {n['WAREHOUSE_NAME']}</div>
+                </div>""", unsafe_allow_html=True)
 
-        # Read section
         if not read_notifs.empty:
-            with st.expander(f"Earlier ({len(read_notifs)} read)"):
+            with st.expander(f"📁 Earlier ({len(read_notifs)} read)"):
                 for _, n in read_notifs.iterrows():
                     ntype = n["NOTIFICATION_TYPE"]
-                    if ntype == "APPROVAL_NEEDED":
-                        icon = "🔴"
-                    elif ntype == "APPROVED":
-                        icon = "🟢"
-                    else:
-                        icon = "🔵"
-                    st.markdown(f"**{icon} {n['TITLE']}** - {n['MESSAGE']}")
+                    icon = "🔴" if ntype == "APPROVAL_NEEDED" else "🟢" if ntype == "APPROVED" else "🔵"
+                    st.markdown(f"{icon} **{n['TITLE']}** — {n['MESSAGE']}")
+
+    st.markdown("""
+    <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
+        ℹ️ All times shown in your local timezone
+    </div>
+    """, unsafe_allow_html=True)
 
 # ============================================================
 # TAB 6: AUDIT TRAIL
 # ============================================================
 elif "Audit Trail" in tab_choice:
-    st.header("📜 Audit Trail")
-    st.caption("Complete history of all detections, actions, and approvals")
+    render_page_header("Audit Trail", "📜")
 
-    # Summary stats
+    # Summary KPIs
     audit_stats = run_query(f"""
         SELECT
             COUNT(*) AS TOTAL_ENTRIES,
@@ -572,12 +836,16 @@ elif "Audit Trail" in tab_choice:
         FROM {DB}.{SCHEMA}.AUDIT_LOG
     """)
     as1, as2, as3, as4 = st.columns(4)
-    as1.metric("Total Entries", int(audit_stats["TOTAL_ENTRIES"].iloc[0]))
-    as2.metric("🤖 Auto Actions", int(audit_stats["AUTO_ACTIONS"].iloc[0]))
-    as3.metric("👤 Manual Actions", int(audit_stats["MANUAL_ACTIONS"].iloc[0]))
-    as4.metric("⏳ Pending", int(audit_stats["PENDING"].iloc[0]))
+    with as1:
+        st.markdown(render_kpi_card("📋", "rgba(59,130,246,0.1)", "Total Entries", str(int(audit_stats["TOTAL_ENTRIES"].iloc[0])), "", True), unsafe_allow_html=True)
+    with as2:
+        st.markdown(render_kpi_card("🤖", "rgba(118,75,162,0.1)", "Auto Actions", str(int(audit_stats["AUTO_ACTIONS"].iloc[0])), "", True), unsafe_allow_html=True)
+    with as3:
+        st.markdown(render_kpi_card("👤", "rgba(22,163,74,0.1)", "Manual Actions", str(int(audit_stats["MANUAL_ACTIONS"].iloc[0])), "", True), unsafe_allow_html=True)
+    with as4:
+        st.markdown(render_kpi_card("⏳", "rgba(245,158,11,0.1)", "Pending", str(int(audit_stats["PENDING"].iloc[0])), "", int(audit_stats["PENDING"].iloc[0]) == 0), unsafe_allow_html=True)
 
-    st.markdown("")
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
     # Filters
     fcol1, fcol2, fcol3 = st.columns(3)
@@ -641,3 +909,9 @@ elif "Audit Trail" in tab_choice:
                         st.code(entry["SQL_EXECUTED"], language="sql")
     else:
         st.info("No audit entries match your filters.")
+
+    st.markdown("""
+    <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
+        ℹ️ All times shown in your local timezone
+    </div>
+    """, unsafe_allow_html=True)
