@@ -37,32 +37,37 @@ header[data-testid="stHeader"] {
     padding-top: 0 !important;
 }
 
-/* Radio buttons as nav items - hide circles, add left-border active */
+/* Radio buttons as nav items - hide circles, clear active/inactive states */
 [data-testid="stSidebar"] .stRadio > div {
-    gap: 0 !important;
+    gap: 2px !important;
 }
 [data-testid="stSidebar"] .stRadio > div > label {
-    padding: 10px 16px !important;
-    margin: 1px 0 !important;
-    border-radius: 0 8px 8px 0 !important;
+    padding: 11px 16px !important;
+    margin: 0 !important;
+    border-radius: 8px !important;
     border-left: 3px solid transparent !important;
-    transition: all 0.15s ease;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     font-size: 0.88rem !important;
-    color: #444 !important;
+    color: #6B7280 !important;
+    font-weight: 400 !important;
+    background: transparent !important;
+    cursor: pointer;
 }
 [data-testid="stSidebar"] .stRadio > div > label > div:first-child {
     display: none !important;
 }
 [data-testid="stSidebar"] .stRadio > div > label:hover {
-    background: rgba(102, 126, 234, 0.04) !important;
-    color: #333 !important;
+    background: rgba(102, 126, 234, 0.06) !important;
+    color: #4B5563 !important;
+    border-left: 3px solid rgba(102, 126, 234, 0.3) !important;
 }
 [data-testid="stSidebar"] .stRadio > div > label[data-checked="true"],
 [data-testid="stSidebar"] .stRadio > div > label[aria-checked="true"] {
     border-left: 3px solid #667eea !important;
-    background: rgba(102, 126, 234, 0.06) !important;
-    color: #667eea !important;
+    background: linear-gradient(90deg, rgba(102, 126, 234, 0.10) 0%, rgba(102, 126, 234, 0.03) 100%) !important;
+    color: #4338CA !important;
     font-weight: 600 !important;
+    box-shadow: 0 1px 3px rgba(102, 126, 234, 0.08) !important;
 }
 
 /* Button styling */
@@ -71,10 +76,19 @@ header[data-testid="stHeader"] {
     font-weight: 500;
     font-size: 0.85rem;
     transition: all 0.2s;
+    border: 1px solid #E5E7EB;
+}
+.stButton > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
 }
 .stButton > button[kind="primary"] {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     border: none;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+.stButton > button[kind="primary"]:hover {
+    box-shadow: 0 4px 14px rgba(102, 126, 234, 0.4);
 }
 
 /* Expander styling */
@@ -102,6 +116,24 @@ header[data-testid="stHeader"] {
 /* Metric override - hide default */
 [data-testid="stMetricValue"] {
     font-size: 1.4rem !important;
+}
+
+/* Scrollbar styling */
+[data-testid="stSidebar"] ::-webkit-scrollbar {
+    width: 4px;
+}
+[data-testid="stSidebar"] ::-webkit-scrollbar-thumb {
+    background: #D1D5DB;
+    border-radius: 4px;
+}
+[data-testid="stSidebar"] ::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* KPI card hover effect */
+.kpi-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -137,7 +169,7 @@ def render_kpi_card(icon_emoji, icon_bg, label, value, delta_text="", delta_posi
     delta_arrow = "↑" if delta_positive else "↓"
     delta_html = f'<div style="font-size:0.75rem;color:{delta_color};margin-top:4px;">{delta_arrow} {delta_text}</div>' if delta_text else ""
     return f"""
-    <div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 18px;height:100%;">
+    <div class="kpi-card" style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 18px;height:100%;transition:all 0.2s ease;">
         <div style="width:36px;height:36px;background:{icon_bg};border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;">
             <span style="font-size:1rem;">{icon_emoji}</span>
         </div>
@@ -636,20 +668,21 @@ elif "Intelligence" in tab_choice:
     user_q = st.text_input("Ask a question about your Snowflake costs...")
     if user_q:
         try:
-            import snowflake.cortex as cortex
             context_df = run_query(f"""
                 SELECT WAREHOUSE_NAME, ANOMALY_TYPE, SEVERITY, CREDITS_WASTED, STATUS
                 FROM {DB}.{SCHEMA}.USAGE_ANOMALIES ORDER BY DETECTED_AT DESC LIMIT 15
             """)
             prompt = (
                 "You are FinOps Guardian, an AI assistant for Snowflake cost optimization. "
-                "Answer concisely with specific numbers and actionable recommendations.\n\n"
-                f"Current anomaly data:\n{context_df.to_string(index=False)}\n\n"
+                "Answer concisely with specific numbers and actionable recommendations.\\n\\n"
+                f"Current anomaly data:\\n{context_df.to_string(index=False)}\\n\\n"
                 f"Credit rate: ${CREDIT_RATE}/credit. "
-                f"Total credits saved so far: {context_df[context_df['STATUS']=='RESOLVED']['CREDITS_WASTED'].sum():.2f}\n\n"
+                f"Total credits saved so far: {context_df[context_df['STATUS']=='RESOLVED']['CREDITS_WASTED'].sum():.2f}\\n\\n"
                 f"Question: {user_q}"
             )
-            answer = cortex.Complete("mistral-large2", prompt)
+            safe_prompt = prompt.replace("'", "\\'")
+            answer_df = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{safe_prompt}') AS RESPONSE")
+            answer = answer_df["RESPONSE"].iloc[0]
             st.markdown(f"""<div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 20px;margin-top:12px;">
                 <div style="font-size:0.75rem;color:#667eea;font-weight:500;margin-bottom:8px;">🤖 AI Response</div>
                 <div style="color:#333;font-size:0.9rem;line-height:1.6;">{answer}</div>
