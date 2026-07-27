@@ -20,10 +20,42 @@ header[data-testid="stHeader"] {
     display: none;
 }
 
-/* Sidebar styling */
+/* Force light theme for entire app */
+.stApp, .main, .main .block-container {
+    background-color: #F8F9FB !important;
+    color: #1a1a2e !important;
+}
+.stApp [data-testid="stMarkdownContainer"] p,
+.stApp [data-testid="stMarkdownContainer"] h1,
+.stApp [data-testid="stMarkdownContainer"] h2,
+.stApp [data-testid="stMarkdownContainer"] h3 {
+    color: #1a1a2e !important;
+}
+
+/* Override Streamlit CSS variables for light theme */
+:root, .stApp {
+    --background-color: #F8F9FB !important;
+    --secondary-background-color: #FFFFFF !important;
+    --text-color: #1a1a2e !important;
+    --font: "Source Sans Pro", sans-serif !important;
+}
+.stApp {
+    background: #F8F9FB !important;
+}
+section[data-testid="stSidebar"] > div {
+    background: #FFFFFF !important;
+}
+
+/* Sidebar styling - force light theme */
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] > div,
+[data-testid="stSidebar"] > div > div {
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    color: #374151 !important;
+}
 [data-testid="stSidebar"] {
-    background: #FFFFFF;
-    border-right: 1px solid #E8ECF0;
+    border-right: 1px solid #E8ECF0 !important;
 }
 [data-testid="stSidebar"] > div:first-child {
     padding-top: 0rem;
@@ -35,6 +67,13 @@ header[data-testid="stHeader"] {
 }
 [data-testid="stSidebar"] > div > div:first-child {
     padding-top: 0 !important;
+}
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] .stMarkdown,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+    color: inherit !important;
 }
 
 /* Radio buttons as nav items - styled with active/inactive states */
@@ -48,7 +87,7 @@ header[data-testid="stHeader"] {
     border-left: 3px solid transparent !important;
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     font-size: 0.88rem !important;
-    color: #6B7280 !important;
+    color: #4B5563 !important;
     font-weight: 400 !important;
     background: transparent !important;
     cursor: pointer;
@@ -59,10 +98,16 @@ header[data-testid="stHeader"] {
 [data-testid="stSidebar"] .stRadio > div > label > div:first-child {
     display: none !important;
 }
-[data-testid="stSidebar"] .stRadio > div > label:hover {
-    background: rgba(102, 126, 234, 0.06) !important;
+[data-testid="stSidebar"] .stRadio > div > label > div[data-testid="stMarkdownContainer"] p {
     color: #4B5563 !important;
-    border-left: 3px solid rgba(102, 126, 234, 0.3) !important;
+}
+[data-testid="stSidebar"] .stRadio > div > label:hover {
+    background: rgba(102, 126, 234, 0.08) !important;
+    color: #1F2937 !important;
+    border-left: 3px solid rgba(102, 126, 234, 0.4) !important;
+}
+[data-testid="stSidebar"] .stRadio > div > label:hover > div[data-testid="stMarkdownContainer"] p {
+    color: #1F2937 !important;
 }
 
 /* Button styling */
@@ -309,10 +354,14 @@ with st.sidebar:
     st.markdown(f"""<style>
     [data-testid="stSidebar"] .stRadio > div > label:nth-child({active_nth}) {{
         border-left: 3px solid #667eea !important;
-        background: linear-gradient(90deg, rgba(102,126,234,0.12) 0%, rgba(102,126,234,0.03) 100%) !important;
+        background: linear-gradient(90deg, rgba(102,126,234,0.15) 0%, rgba(102,126,234,0.05) 100%) !important;
         color: #4338CA !important;
         font-weight: 600 !important;
         box-shadow: 0 1px 3px rgba(102,126,234,0.08) !important;
+    }}
+    [data-testid="stSidebar"] .stRadio > div > label:nth-child({active_nth}) > div[data-testid="stMarkdownContainer"] p {{
+        color: #4338CA !important;
+        font-weight: 600 !important;
     }}
     </style>""", unsafe_allow_html=True)
 
