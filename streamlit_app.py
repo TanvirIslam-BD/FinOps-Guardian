@@ -1,6 +1,7 @@
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 from datetime import datetime, timedelta
+import time
 
 st.set_page_config(
     page_title="FinOps Guardian",
@@ -104,16 +105,30 @@ header[data-testid="stHeader"] {
     font-size: 0.85rem;
 }
 
-/* Animation */
+/* Smooth content transitions */
 @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(-4px); }
+    from { opacity: 0; transform: translateY(6px); }
     to { opacity: 1; transform: translateY(0); }
 }
+@keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
 .main .block-container > div {
-    animation: fadeIn 0.3s ease-in;
+    animation: fadeIn 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Metric override - hide default */
+/* Loading skeleton pulse */
+.loading-skeleton {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 8px;
+    height: 120px;
+    margin-bottom: 12px;
+}
+
+/* Metric override */
 [data-testid="stMetricValue"] {
     font-size: 1.4rem !important;
 }
@@ -130,10 +145,31 @@ header[data-testid="stHeader"] {
     background: transparent;
 }
 
-/* KPI card hover effect */
+/* KPI card hover */
 .kpi-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Active tab pill in header */
+.active-tab-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(118,75,162,0.08) 100%);
+    border: 1px solid rgba(102,126,234,0.2);
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #4338CA;
+    letter-spacing: 0.3px;
+}
+
+/* Spinner override for smoother look */
+[data-testid="stSpinner"] > div {
+    border-color: #667eea transparent transparent transparent !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -337,7 +373,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
 
-# --- Page Header (date range + refresh) ---
+# --- Page Header (date range + active tab pill) ---
 def render_page_header(title, emoji):
     today = datetime.now()
     week_start = today - timedelta(days=today.weekday())
@@ -347,14 +383,30 @@ def render_page_header(title, emoji):
     st.markdown(f"""
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #E8ECF0;">
         <div>
-            <h1 style="margin:0;font-size:1.6rem;color:#1a1a2e;">{emoji} {title}</h1>
-            <p style="margin:4px 0 0 0;color:#888;font-size:0.82rem;">Real-time overview of your Snowflake cost optimization posture</p>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">
+                <h1 style="margin:0;font-size:1.6rem;color:#1a1a2e;">{emoji} {title}</h1>
+                <span class="active-tab-pill">● Active</span>
+            </div>
+            <p style="margin:0;color:#888;font-size:0.82rem;">Real-time overview of your Snowflake cost optimization posture</p>
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
             <span style="background:#F3F4F6;padding:6px 14px;border-radius:8px;font-size:0.82rem;color:#555;">📅 {date_range}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Show loading skeleton that will be replaced by content
+    loading_placeholder = st.empty()
+    loading_placeholder.markdown("""
+    <div style="display:flex;gap:12px;margin-bottom:16px;">
+        <div class="loading-skeleton" style="flex:1;height:90px;"></div>
+        <div class="loading-skeleton" style="flex:1;height:90px;"></div>
+        <div class="loading-skeleton" style="flex:1;height:90px;"></div>
+        <div class="loading-skeleton" style="flex:1;height:90px;"></div>
+    </div>
+    """, unsafe_allow_html=True)
+    time.sleep(0.1)
+    loading_placeholder.empty()
 
 
 # ============================================================
