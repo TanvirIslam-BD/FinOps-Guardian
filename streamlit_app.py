@@ -210,9 +210,9 @@ CO2_PER_KWH = 0.39
 def run_query(sql):
     return session.sql(sql).to_pandas()
 
-@st.cache_data(ttl=120, show_spinner=False)
-def run_query_cached(sql):
-    return session.sql(sql).to_pandas()
+@st.cache_data(ttl=120)
+def run_query_cached(_session, sql):
+    return _session.sql(sql).to_pandas()
 
 
 # --- Helper Functions for Reference UI Components ---
@@ -304,13 +304,13 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     # Quick Stats
-    notif_count = run_query_cached(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.NOTIFICATIONS WHERE IS_READ = FALSE")
+    notif_count = run_query_cached(session, f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.NOTIFICATIONS WHERE IS_READ = FALSE")
     unread = int(notif_count["CNT"].iloc[0])
 
-    open_count = run_query_cached(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.USAGE_ANOMALIES WHERE STATUS IN ('OPEN','ACKNOWLEDGED')")
+    open_count = run_query_cached(session, f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.USAGE_ANOMALIES WHERE STATUS IN ('OPEN','ACKNOWLEDGED')")
     open_issues = int(open_count["CNT"].iloc[0])
 
-    wh_count = run_query_cached("SHOW WAREHOUSES")
+    wh_count = run_query("SHOW WAREHOUSES")
     servers = len(wh_count) if not wh_count.empty else 3
 
     st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:4px 0 8px 0;font-weight:600;">Quick Stats</div>""", unsafe_allow_html=True)
@@ -439,7 +439,7 @@ if "Executive Summary" in tab_choice:
     render_page_header("Executive Summary", "📊")
 
     # Fetch data
-    summary = run_query_cached(f"""
+    summary = run_query_cached(session, f"""
         SELECT
             COUNT(*) AS total_anomalies,
             SUM(CREDITS_WASTED) AS total_credits_wasted,
@@ -481,7 +481,7 @@ if "Executive Summary" in tab_choice:
                 </div>
             </div>
         </div>""", unsafe_allow_html=True)
-        savings = run_query_cached(f"SELECT SNAPSHOT_DATE, DOLLAR_SAVED FROM {DB}.{SCHEMA}.SAVINGS_HISTORY ORDER BY SNAPSHOT_DATE")
+        savings = run_query_cached(session, f"SELECT SNAPSHOT_DATE, DOLLAR_SAVED FROM {DB}.{SCHEMA}.SAVINGS_HISTORY ORDER BY SNAPSHOT_DATE")
         if not savings.empty:
             st.line_chart(savings.set_index("SNAPSHOT_DATE"))
         else:
@@ -497,7 +497,7 @@ if "Executive Summary" in tab_choice:
                 </div>
             </div>
         </div>""", unsafe_allow_html=True)
-        chart_data = run_query_cached(f"""
+        chart_data = run_query_cached(session, f"""
             SELECT WAREHOUSE_NAME, ANOMALY_TYPE, SUM(CREDITS_WASTED) AS CREDITS
             FROM {DB}.{SCHEMA}.USAGE_ANOMALIES GROUP BY 1, 2 ORDER BY CREDITS DESC
         """)
@@ -517,14 +517,14 @@ if "Executive Summary" in tab_choice:
 
     try:
         session.sql("SHOW WAREHOUSES").collect()
-        wh_all = run_query_cached("""
+        wh_all = run_query_cached(session, """
             SELECT "name" AS WH, "state" AS STATE, "size" AS SIZE,
                    "auto_suspend" AS AUTO_SUSPEND, "running" AS RUNNING
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
         """)
 
         if not wh_all.empty:
-            anomaly_counts = run_query_cached(f"""
+            anomaly_counts = run_query_cached(session, f"""
                 SELECT WAREHOUSE_NAME, COUNT(*) AS ANOMALY_COUNT
                 FROM {DB}.{SCHEMA}.USAGE_ANOMALIES
                 WHERE DETECTED_AT >= DATEADD('day', -7, CURRENT_TIMESTAMP())
@@ -584,7 +584,7 @@ elif "Operations" in tab_choice:
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🖥️ Warehouse Status (Live)</div>""", unsafe_allow_html=True)
     try:
         session.sql("SHOW WAREHOUSES").collect()
-        wh_raw = run_query_cached("""
+        wh_raw = run_query_cached(session, """
             SELECT "name" AS WAREHOUSE, "state" AS STATUS, "size" AS SIZE,
                    "auto_suspend" AS AUTO_SUSPEND_SEC, "running" AS RUNNING, "queued" AS QUEUED
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
@@ -612,7 +612,7 @@ elif "Operations" in tab_choice:
 
     # Auto-applied fixes
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🤖 Recently Auto-Applied Fixes</div>""", unsafe_allow_html=True)
-    auto_fixes = run_query_cached(f"""
+    auto_fixes = run_query_cached(session, f"""
         SELECT l.LOGGED_AT, l.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
                ROUND(a.CREDITS_WASTED * {CREDIT_RATE}, 2) AS DOLLAR_SAVED, l.SQL_EXECUTED
         FROM {DB}.{SCHEMA}.AUDIT_LOG l
@@ -737,7 +737,7 @@ elif "Approvals" in tab_choice:
     render_page_header("Approvals", "✅")
 
     # Pending approvals count
-    pending = run_query_cached(f"""
+    pending = run_query_cached(session, f"""
         SELECT a.ANOMALY_ID, a.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
                a.CREDITS_WASTED, a.DESCRIPTION, l.SQL_EXECUTED AS PROPOSED_FIX
         FROM {DB}.{SCHEMA}.USAGE_ANOMALIES a
@@ -797,7 +797,7 @@ elif "Approvals" in tab_choice:
     # Recently approved
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">✔️ Recently Approved</div>""", unsafe_allow_html=True)
-    recent_approved = run_query_cached(f"""
+    recent_approved = run_query_cached(session, f"""
         SELECT l.LOGGED_AT, l.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
                ROUND(a.CREDITS_WASTED * {CREDIT_RATE}, 2) AS DOLLAR_SAVED, l.APPROVED_BY
         FROM {DB}.{SCHEMA}.AUDIT_LOG l
@@ -838,7 +838,7 @@ elif "Intelligence" in tab_choice:
     user_q = st.text_input("Ask a question about your Snowflake costs...")
     if user_q:
         try:
-            context_df = run_query_cached(f"""
+            context_df = run_query_cached(session, f"""
                 SELECT WAREHOUSE_NAME, ANOMALY_TYPE, SEVERITY, CREDITS_WASTED, STATUS
                 FROM {DB}.{SCHEMA}.USAGE_ANOMALIES ORDER BY DETECTED_AT DESC LIMIT 15
             """)
@@ -865,7 +865,7 @@ elif "Intelligence" in tab_choice:
     # Cost Attribution
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">👥 Cost Attribution (Top Users - 7 Days)</div>""", unsafe_allow_html=True)
     try:
-        attribution = run_query_cached("""
+        attribution = run_query_cached(session, """
             SELECT USER_NAME, ROLE_NAME, COUNT(*) AS QUERIES,
                    ROUND(SUM(CREDITS_USED_CLOUD_SERVICES), 4) AS CREDITS,
                    ROUND(SUM(CREDITS_USED_CLOUD_SERVICES) * 3.00, 2) AS DOLLARS
@@ -887,7 +887,7 @@ elif "Intelligence" in tab_choice:
     # Week-over-Week
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">📈 Week-over-Week Comparison</div>""", unsafe_allow_html=True)
     try:
-        wow = run_query_cached("""
+        wow = run_query_cached(session, """
             SELECT WAREHOUSE_NAME,
                    SUM(CASE WHEN START_TIME >= DATE_TRUNC('week', CURRENT_DATE) THEN CREDITS_USED ELSE 0 END) AS THIS_WEEK,
                    SUM(CASE WHEN START_TIME >= DATEADD('week', -1, DATE_TRUNC('week', CURRENT_DATE))
@@ -924,7 +924,7 @@ elif "Compliance" in tab_choice:
 
     try:
         session.sql("SHOW WAREHOUSES").collect()
-        wh_data = run_query_cached("""
+        wh_data = run_query_cached(session, """
             SELECT "name" AS WH, "size" AS SIZE, "auto_suspend" AS AUTO_SUSPEND,
                    "auto_resume" AS AUTO_RESUME, "type" AS TYPE
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
@@ -1030,7 +1030,7 @@ elif "Compliance" in tab_choice:
 elif "Notifications" in tab_choice:
     render_page_header("Notifications", "🔔")
 
-    notifs = run_query_cached(f"""
+    notifs = run_query_cached(session, f"""
         SELECT NOTIFICATION_ID, CREATED_AT, NOTIFICATION_TYPE, TITLE, MESSAGE,
                WAREHOUSE_NAME, IS_READ
         FROM {DB}.{SCHEMA}.NOTIFICATIONS
@@ -1148,7 +1148,7 @@ elif "Audit Trail" in tab_choice:
     render_page_header("Audit Trail", "📜")
 
     # Summary KPIs
-    audit_stats = run_query_cached(f"""
+    audit_stats = run_query_cached(session, f"""
         SELECT
             COUNT(*) AS TOTAL_ENTRIES,
             COUNT(CASE WHEN ACTION_TYPE = 'AUTO_ACTION' THEN 1 END) AS AUTO_ACTIONS,
@@ -1171,7 +1171,7 @@ elif "Audit Trail" in tab_choice:
     # Filters
     fcol1, fcol2, fcol3 = st.columns(3)
     with fcol1:
-        warehouses = run_query_cached(f"""
+        warehouses = run_query_cached(session, f"""
             SELECT DISTINCT WAREHOUSE_NAME FROM {DB}.{SCHEMA}.AUDIT_LOG
             WHERE WAREHOUSE_NAME IS NOT NULL ORDER BY 1
         """)
@@ -1191,7 +1191,7 @@ elif "Audit Trail" in tab_choice:
         where_clauses.append(f"ACTION_TYPE = '{action_filter}'")
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-    audit_log = run_query_cached(f"""
+    audit_log = run_query_cached(session, f"""
         SELECT LOG_ID, LOGGED_AT, ACTION_TYPE, ANOMALY_ID, WAREHOUSE_NAME,
                ACTION_DETAILS, SQL_EXECUTED, APPROVED_BY, STATUS
         FROM {DB}.{SCHEMA}.AUDIT_LOG {where_sql}
