@@ -1,7 +1,6 @@
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 from datetime import datetime, timedelta
-import time
 
 st.set_page_config(
     page_title="FinOps Guardian",
@@ -38,7 +37,7 @@ header[data-testid="stHeader"] {
     padding-top: 0 !important;
 }
 
-/* Radio buttons as nav items - hide circles, clear active/inactive states */
+/* Radio buttons as nav items - styled with active/inactive states */
 [data-testid="stSidebar"] .stRadio > div {
     gap: 2px !important;
 }
@@ -53,6 +52,9 @@ header[data-testid="stHeader"] {
     font-weight: 400 !important;
     background: transparent !important;
     cursor: pointer;
+    width: 100% !important;
+    display: block !important;
+    box-sizing: border-box !important;
 }
 [data-testid="stSidebar"] .stRadio > div > label > div:first-child {
     display: none !important;
@@ -61,14 +63,6 @@ header[data-testid="stHeader"] {
     background: rgba(102, 126, 234, 0.06) !important;
     color: #4B5563 !important;
     border-left: 3px solid rgba(102, 126, 234, 0.3) !important;
-}
-[data-testid="stSidebar"] .stRadio > div > label[data-checked="true"],
-[data-testid="stSidebar"] .stRadio > div > label[aria-checked="true"] {
-    border-left: 3px solid #667eea !important;
-    background: linear-gradient(90deg, rgba(102, 126, 234, 0.10) 0%, rgba(102, 126, 234, 0.03) 100%) !important;
-    color: #4338CA !important;
-    font-weight: 600 !important;
-    box-shadow: 0 1px 3px rgba(102, 126, 234, 0.08) !important;
 }
 
 /* Button styling */
@@ -118,16 +112,6 @@ header[data-testid="stHeader"] {
     animation: fadeIn 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Loading skeleton pulse */
-.loading-skeleton {
-    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
-    background-size: 200% 100%;
-    animation: shimmer 1.5s infinite;
-    border-radius: 8px;
-    height: 120px;
-    margin-bottom: 12px;
-}
-
 /* Metric override */
 [data-testid="stMetricValue"] {
     font-size: 1.4rem !important;
@@ -152,22 +136,7 @@ header[data-testid="stHeader"] {
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Active tab pill in header */
-.active-tab-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(118,75,162,0.08) 100%);
-    border: 1px solid rgba(102,126,234,0.2);
-    padding: 5px 14px;
-    border-radius: 20px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #4338CA;
-    letter-spacing: 0.3px;
-}
-
-/* Spinner override for smoother look */
+/* Spinner override */
 [data-testid="stSpinner"] > div {
     border-color: #667eea transparent transparent transparent !important;
 }
@@ -280,29 +249,31 @@ with st.sidebar:
         </div>
         <div>
             <div style="font-size:1.05rem;font-weight:700;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.2;">FinOps Guardian</div>
-            <div style="font-size:0.65rem;color:#999;letter-spacing:0.3px;">AI-powered cost intelligence</div>
+            <div style="font-size:0.65rem;color:#999;letter-spacing:0.3px;">Expense Intelligence ✨</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Quick status cards
+    # Quick Stats
     notif_count = run_query(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.NOTIFICATIONS WHERE IS_READ = FALSE")
     unread = int(notif_count["CNT"].iloc[0])
 
     open_count = run_query(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.USAGE_ANOMALIES WHERE STATUS IN ('OPEN','ACKNOWLEDGED')")
     open_issues = int(open_count["CNT"].iloc[0])
 
-    issues_color = "#DC2626" if open_issues > 0 else "#16A34A"
-    notif_color = "#667eea" if unread > 0 else "#16A34A"
+    wh_count = run_query("SHOW WAREHOUSES")
+    servers = len(wh_count) if not wh_count.empty else 3
+
+    st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:4px 0 8px 0;font-weight:600;">Quick Stats</div>""", unsafe_allow_html=True)
     st.markdown(f"""
-    <div style="display:flex;gap:8px;margin:4px 0 12px 0;">
+    <div style="display:flex;gap:8px;margin:0 0 12px 0;">
         <div style="flex:1;background:rgba(102,126,234,0.04);border:1px solid rgba(102,126,234,0.12);border-radius:10px;padding:10px 12px;text-align:center;">
-            <div style="font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:500;">Open Issues</div>
-            <div style="font-size:1.4rem;font-weight:700;color:{issues_color};margin-top:2px;">{open_issues}</div>
+            <div style="font-size:1.4rem;font-weight:700;color:#DC2626;margin-bottom:2px;">🖥 {servers}</div>
+            <div style="font-size:0.65rem;color:#888;font-weight:500;">Servers</div>
         </div>
         <div style="flex:1;background:rgba(102,126,234,0.04);border:1px solid rgba(102,126,234,0.12);border-radius:10px;padding:10px 12px;text-align:center;">
-            <div style="font-size:0.65rem;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:500;">Unread</div>
-            <div style="font-size:1.4rem;font-weight:700;color:{notif_color};margin-top:2px;">🔔 {unread}</div>
+            <div style="font-size:1.4rem;font-weight:700;color:#667eea;margin-bottom:2px;">👥 {unread}</div>
+            <div style="font-size:0.65rem;color:#888;font-weight:500;">Users</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -325,6 +296,7 @@ with st.sidebar:
         notif_label,
         "📜 Audit Trail"
     ]
+
     tab_choice = st.radio("Navigation", nav_options,
         index=st.session_state.nav_index, label_visibility="collapsed")
 
@@ -332,26 +304,39 @@ with st.sidebar:
     if current_idx != st.session_state.nav_index:
         st.session_state.nav_index = current_idx
 
-    # Agent Controls
-    st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:22px 0 6px 0;font-weight:600;">Agent Controls</div>""", unsafe_allow_html=True)
-    st.caption("Run AI scans and auto-remediation")
+    # Inject dynamic CSS to highlight the active nav item by nth-child
+    active_nth = st.session_state.nav_index + 1
+    st.markdown(f"""<style>
+    [data-testid="stSidebar"] .stRadio > div > label:nth-child({active_nth}) {{
+        border-left: 3px solid #667eea !important;
+        background: linear-gradient(90deg, rgba(102,126,234,0.12) 0%, rgba(102,126,234,0.03) 100%) !important;
+        color: #4338CA !important;
+        font-weight: 600 !important;
+        box-shadow: 0 1px 3px rgba(102,126,234,0.08) !important;
+    }}
+    </style>""", unsafe_allow_html=True)
+
+    # Quick Actions
+    st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:22px 0 6px 0;font-weight:600;">Quick Actions</div>""", unsafe_allow_html=True)
+    st.caption("Shortcuts for common tasks")
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("🔍 Idle Scan", use_container_width=True):
+        if st.button("📤 Upload Scan", use_container_width=True):
             r = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
             st.success(r[0][0])
             st.experimental_rerun()
     with col_b:
-        if st.button("📈 Spike Scan", use_container_width=True):
+        if st.button("📋 Explorer", use_container_width=True):
             r = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
             st.success(r[0][0])
             st.experimental_rerun()
-    if st.button("⚡ Apply Fixes", use_container_width=True, type="primary"):
+    if st.button("+ New Scan", use_container_width=True, type="primary"):
         r = session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
         st.success(r[0][0])
         st.experimental_rerun()
 
-    st.markdown("")
+    st.selectbox("Scan Profile", ["Default", "Cost Optimization", "Idle Detection", "Full Audit"], label_visibility="visible")
+
     with st.expander("🔄 Reset Demo"):
         st.caption("Clears all data and re-runs full pipeline")
         if st.button("Reset All Data", use_container_width=True):
@@ -367,13 +352,13 @@ with st.sidebar:
     # Footer
     st.markdown("""
     <div style="text-align:center;margin-top:24px;padding-top:12px;border-top:1px solid #E8ECF0;">
-        <p style="color:#bbb;font-size:0.68rem;margin:0;">v0.5 · Snowflake Cortex AI</p>
-        <p style="color:#ddd;font-size:0.6rem;margin:2px 0 0 0;">Hackathon 2026</p>
+        <p style="color:#888;font-size:0.68rem;margin:0;">© 2025 FinOps Guardian</p>
+        <p style="color:#bbb;font-size:0.6rem;margin:2px 0 0 0;">All rights reserved</p>
     </div>
     """, unsafe_allow_html=True)
 
 
-# --- Page Header (date range + active tab pill) ---
+# --- Page Header ---
 def render_page_header(title, emoji):
     today = datetime.now()
     week_start = today - timedelta(days=today.weekday())
@@ -381,32 +366,16 @@ def render_page_header(title, emoji):
     date_range = f"{week_start.strftime('%b %d')} – {week_end.strftime('%b %d, %Y')}"
 
     st.markdown(f"""
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #E8ECF0;">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #E8ECF0;">
         <div>
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">
-                <h1 style="margin:0;font-size:1.6rem;color:#1a1a2e;">{emoji} {title}</h1>
-                <span class="active-tab-pill">● Active</span>
-            </div>
-            <p style="margin:0;color:#888;font-size:0.82rem;">Real-time overview of your Snowflake cost optimization posture</p>
+            <h1 style="margin:0;font-size:1.6rem;color:#1a1a2e;">{emoji} {title}</h1>
+            <p style="margin:4px 0 0 0;color:#888;font-size:0.82rem;">Monitor your app health, usage and key metrics at a glance</p>
         </div>
-        <div style="display:flex;align-items:center;gap:12px;">
-            <span style="background:#F3F4F6;padding:6px 14px;border-radius:8px;font-size:0.82rem;color:#555;">📅 {date_range}</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+            <span style="background:#F3F4F6;padding:8px 16px;border-radius:8px;font-size:0.82rem;color:#555;border:1px solid #E5E7EB;cursor:pointer;">📅 {date_range} ▾</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-    # Show loading skeleton that will be replaced by content
-    loading_placeholder = st.empty()
-    loading_placeholder.markdown("""
-    <div style="display:flex;gap:12px;margin-bottom:16px;">
-        <div class="loading-skeleton" style="flex:1;height:90px;"></div>
-        <div class="loading-skeleton" style="flex:1;height:90px;"></div>
-        <div class="loading-skeleton" style="flex:1;height:90px;"></div>
-        <div class="loading-skeleton" style="flex:1;height:90px;"></div>
-    </div>
-    """, unsafe_allow_html=True)
-    time.sleep(0.1)
-    loading_placeholder.empty()
 
 
 # ============================================================
@@ -606,6 +575,101 @@ elif "Operations" in tab_choice:
         st.info("No auto-applied fixes yet. Run detection + Apply Fixes to see results.")
 
     # Footer
+    # --- Smart Alerts: Natural Language ---
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:4px;">🔔 Smart Alerts — Natural Language</div>""", unsafe_allow_html=True)
+    st.markdown("""<p style="color:#888;font-size:0.82rem;margin-bottom:12px;">Create monitoring rules in plain English. AI parses them into structured alerts.</p>""", unsafe_allow_html=True)
+
+    alert_input = st.text_input("Describe your alert rule...", placeholder="e.g. Notify me if any warehouse spends more than $50 per day", key="alert_nl")
+
+    if alert_input:
+        try:
+            import json as _json
+            parse_prompt = (
+                "Parse this monitoring alert rule into JSON. Return ONLY valid JSON, no explanation.\\n"
+                "Format: {\"metric\": \"...\", \"threshold\": ..., \"warehouse\": \"...\", \"condition\": \"...\"}\\n"
+                "Valid metrics: daily_spend, weekly_spend, credits_per_hour, idle_minutes, query_count\\n"
+                "Valid conditions: greater_than, less_than, equals\\n"
+                "If no warehouse specified, use ANY.\\n\\n"
+                f"Rule: {alert_input}"
+            )
+            safe_parse = parse_prompt.replace("'", "\\'")
+            parse_result = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{safe_parse}') AS RESPONSE")
+            raw_response = parse_result["RESPONSE"].iloc[0]
+
+            # Extract JSON from response
+            json_start = raw_response.find("{")
+            json_end = raw_response.rfind("}") + 1
+            parsed = _json.loads(raw_response[json_start:json_end])
+
+            metric = parsed.get("metric", "daily_spend")
+            threshold = float(parsed.get("threshold", 0))
+            warehouse = parsed.get("warehouse", "ANY")
+            condition = parsed.get("condition", "greater_than")
+
+            cond_symbol = ">" if condition == "greater_than" else "<" if condition == "less_than" else "="
+            metric_icon = "💰" if "spend" in metric else "⏱" if "idle" in metric or "hour" in metric else "📊"
+
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 20px;margin-top:12px;">
+                <div style="font-size:0.75rem;color:#667eea;font-weight:500;margin-bottom:10px;">🤖 Parsed Alert Rule</div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+                    <span style="background:rgba(102,126,234,0.08);color:#4338CA;padding:4px 12px;border-radius:6px;font-size:0.8rem;font-weight:500;">{metric_icon} {metric}</span>
+                    <span style="background:rgba(220,38,38,0.08);color:#DC2626;padding:4px 12px;border-radius:6px;font-size:0.8rem;font-weight:500;">{cond_symbol} {threshold}</span>
+                    <span style="background:rgba(22,163,74,0.08);color:#16A34A;padding:4px 12px;border-radius:6px;font-size:0.8rem;font-weight:500;">🖥 {warehouse}</span>
+                </div>
+                <div style="font-size:0.82rem;color:#555;">"{alert_input}"</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("✅ Activate Alert", type="primary", key="activate_alert"):
+                safe_rule = alert_input.replace("'", "''")
+                safe_wh = warehouse.replace("'", "''")
+                session.sql(f"""
+                    INSERT INTO {DB}.{SCHEMA}.SMART_ALERTS (NATURAL_LANGUAGE_RULE, PARSED_METRIC, PARSED_THRESHOLD, PARSED_WAREHOUSE, PARSED_CONDITION)
+                    VALUES ('{safe_rule}', '{metric}', {threshold}, '{safe_wh}', '{condition}')
+                """).collect()
+                st.success("Alert activated!")
+                st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Could not parse alert: {e}")
+
+    # Show active alerts
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    active_alerts = run_query(f"SELECT * FROM {DB}.{SCHEMA}.SMART_ALERTS WHERE IS_ACTIVE = TRUE ORDER BY CREATED_AT DESC")
+    if not active_alerts.empty:
+        st.markdown(f"""<div style="font-size:0.9rem;font-weight:600;color:#1a1a2e;margin-bottom:10px;">Active Alerts ({len(active_alerts)})</div>""", unsafe_allow_html=True)
+        for _, alert in active_alerts.iterrows():
+            a_metric = alert["PARSED_METRIC"]
+            a_thresh = alert["PARSED_THRESHOLD"]
+            a_wh = alert["PARSED_WAREHOUSE"]
+            a_cond = alert["PARSED_CONDITION"]
+            a_rule = alert["NATURAL_LANGUAGE_RULE"]
+            a_id = int(alert["ALERT_ID"])
+            triggered = alert["TRIGGER_COUNT"]
+
+            cond_sym = ">" if a_cond == "greater_than" else "<" if a_cond == "less_than" else "="
+            status_badge = f'<span style="background:rgba(22,163,74,0.1);color:#16A34A;padding:3px 10px;border-radius:6px;font-size:0.72rem;font-weight:500;">🟢 Active</span>' if triggered == 0 else f'<span style="background:rgba(220,38,38,0.1);color:#DC2626;padding:3px 10px;border-radius:6px;font-size:0.72rem;font-weight:500;">🔴 Triggered ({triggered}x)</span>'
+
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #E8ECF0;border-radius:10px;padding:14px 18px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <span style="font-size:0.82rem;font-weight:500;color:#1a1a2e;">{a_rule}</span>
+                    {status_badge}
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <span style="background:#F3F4F6;padding:3px 8px;border-radius:4px;font-size:0.72rem;color:#555;">{a_metric} {cond_sym} {a_thresh}</span>
+                    <span style="background:#F3F4F6;padding:3px 8px;border-radius:4px;font-size:0.72rem;color:#555;">🖥 {a_wh}</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button(f"🗑 Delete", key=f"del_alert_{a_id}"):
+                session.sql(f"UPDATE {DB}.{SCHEMA}.SMART_ALERTS SET IS_ACTIVE = FALSE WHERE ALERT_ID = {a_id}").collect()
+                st.experimental_rerun()
+    else:
+        st.markdown("""<div style="background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:10px;padding:20px;text-align:center;color:#888;font-size:0.85rem;">No active alerts yet. Create one above using natural language!</div>""", unsafe_allow_html=True)
+
     st.markdown("""
     <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
         ℹ️ All times shown in your local timezone
