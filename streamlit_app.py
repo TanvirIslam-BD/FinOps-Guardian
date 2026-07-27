@@ -32,55 +32,81 @@ def run_query(sql):
 
 # --- Sidebar ---
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/f/ff/Snowflake_Logo.svg/200px-Snowflake_Logo.svg.png", width=40)
-    st.title("FinOps Guardian")
-    st.caption("v0.5 | AI-Powered Cost Intelligence")
+    st.markdown("""
+    <div style="text-align:center;padding:10px 0 5px 0;">
+        <span style="font-size:2.2rem;">🛡️</span>
+        <h2 style="margin:0;padding:4px 0 0 0;">FinOps Guardian</h2>
+        <p style="margin:0;color:#888;font-size:0.82rem;">AI-Powered Cost Intelligence</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Notification Bell
+    # Quick status summary
     notif_count = run_query(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.NOTIFICATIONS WHERE IS_READ = FALSE")
     unread = int(notif_count["CNT"].iloc[0])
-    notif_label = f"Notifications ({unread})" if unread > 0 else "Notifications"
 
-    st.divider()
+    open_count = run_query(f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.USAGE_ANOMALIES WHERE STATUS IN ('OPEN','ACKNOWLEDGED')")
+    open_issues = int(open_count["CNT"].iloc[0])
+
+    st.markdown("")
+    s1, s2 = st.columns(2)
+    s1.metric("Open Issues", open_issues)
+    s2.metric("Unread", unread)
+
+    st.markdown("")
+    st.markdown("**Navigate**")
+    notif_label = f"🔔 Notifications ({unread})" if unread > 0 else "🔔 Notifications"
     tab_choice = st.radio("Navigation", [
-        "Executive Summary",
-        "Operations",
-        "Intelligence",
-        "Compliance",
-        "Notifications",
-        "Audit Trail"
+        "📊 Executive Summary",
+        "⚙️ Operations",
+        "🧠 Intelligence",
+        "📋 Compliance",
+        notif_label,
+        "📜 Audit Trail"
     ], label_visibility="collapsed")
 
-    st.divider()
-    st.subheader("Agent Controls")
-    if st.button("Run Idle Detection", use_container_width=True):
-        r = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
-        st.success(r[0][0])
-        st.experimental_rerun()
-    if st.button("Run Spike Detection", use_container_width=True):
-        r = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
-        st.success(r[0][0])
-        st.experimental_rerun()
-    if st.button("Apply Fixes", use_container_width=True, type="primary"):
+    st.markdown("")
+    st.markdown("**Agent Controls**")
+    st.caption("Run AI detection scans and apply fixes")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("🔍 Idle Scan", use_container_width=True):
+            r = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
+            st.success(r[0][0])
+            st.experimental_rerun()
+    with col_b:
+        if st.button("📈 Spike Scan", use_container_width=True):
+            r = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
+            st.success(r[0][0])
+            st.experimental_rerun()
+    if st.button("⚡ Apply Fixes", use_container_width=True, type="primary"):
         r = session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
         st.success(r[0][0])
         st.experimental_rerun()
-    st.divider()
-    if st.button("Reset Demo", use_container_width=True):
-        session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.USAGE_ANOMALIES").collect()
-        session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.AUDIT_LOG").collect()
-        session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.NOTIFICATIONS").collect()
-        session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
-        session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
-        session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
-        st.success("Demo reset!")
-        st.experimental_rerun()
+
+    st.markdown("")
+    with st.expander("🔄 Reset Demo"):
+        st.caption("Clears all data and re-runs detection pipeline")
+        if st.button("Reset All Data", use_container_width=True):
+            session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.USAGE_ANOMALIES").collect()
+            session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.AUDIT_LOG").collect()
+            session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.NOTIFICATIONS").collect()
+            session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
+            session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
+            session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
+            st.success("Demo reset complete!")
+            st.experimental_rerun()
+
+    st.markdown("")
+    st.markdown("""<p style="text-align:center;color:#666;font-size:0.72rem;margin-top:10px;">
+    v0.5 | Built with Snowflake Cortex AI
+    </p>""", unsafe_allow_html=True)
 
 # ============================================================
 # TAB 1: EXECUTIVE SUMMARY
 # ============================================================
-if tab_choice == "Executive Summary":
-    st.header("Executive Summary")
+if "Executive Summary" in tab_choice:
+    st.header("📊 Executive Summary")
+    st.caption("Real-time overview of your Snowflake cost optimization posture")
 
     # KPI row
     summary = run_query(f"""
@@ -97,13 +123,13 @@ if tab_choice == "Executive Summary":
     co2_saved = credits_saved * KWH_PER_CREDIT * CO2_PER_KWH
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Anomalies", int(summary["TOTAL_ANOMALIES"].iloc[0]))
-    c2.metric("Credits Wasted", f"{total_wasted:.2f}")
-    c3.metric("$ Saved", f"${dollar_saved:,.2f}")
-    c4.metric("Open Issues", int(summary["OPEN_ISSUES"].iloc[0]))
-    c5.metric("CO2 Avoided", f"{co2_saved:.1f} kg")
+    c1.metric("🚨 Anomalies", int(summary["TOTAL_ANOMALIES"].iloc[0]))
+    c2.metric("💸 Credits Wasted", f"{total_wasted:.2f}")
+    c3.metric("💰 $ Saved", f"${dollar_saved:,.2f}")
+    c4.metric("⚠️ Open Issues", int(summary["OPEN_ISSUES"].iloc[0]))
+    c5.metric("🌱 CO2 Avoided", f"{co2_saved:.1f} kg")
 
-    st.divider()
+    st.markdown("")
 
     # Charts row
     ch1, ch2 = st.columns(2)
@@ -113,7 +139,7 @@ if tab_choice == "Executive Summary":
         if not savings.empty:
             st.line_chart(savings.set_index("SNAPSHOT_DATE"))
         else:
-            st.info("No savings history yet.")
+            st.info("No savings history yet. Run detection + apply fixes to populate.")
 
     with ch2:
         st.subheader("Anomalies by Warehouse")
@@ -125,7 +151,7 @@ if tab_choice == "Executive Summary":
             pivot = chart_data.pivot_table(index="WAREHOUSE_NAME", columns="ANOMALY_TYPE", values="CREDITS", aggfunc="sum").fillna(0)
             st.bar_chart(pivot)
 
-    st.divider()
+    st.markdown("")
 
     # Warehouse Health Scores
     st.subheader("Warehouse Health Scores")
@@ -182,22 +208,23 @@ if tab_choice == "Executive Summary":
     st.divider()
 
     # Carbon Impact
-    st.subheader("Environmental Impact")
+    st.subheader("🌍 Environmental Impact")
     eco1, eco2, eco3 = st.columns(3)
     kwh_saved = credits_saved * KWH_PER_CREDIT
-    eco1.metric("Energy Saved", f"{kwh_saved:.1f} kWh")
-    eco2.metric("CO2 Avoided", f"{co2_saved:.1f} kg")
-    eco3.metric("Equivalent Trees", f"{max(1, int(co2_saved / 21.77))}")
+    eco1.metric("⚡ Energy Saved", f"{kwh_saved:.1f} kWh")
+    eco2.metric("🌱 CO2 Avoided", f"{co2_saved:.1f} kg")
+    eco3.metric("🌳 Equivalent Trees", f"{max(1, int(co2_saved / 21.77))}")
     st.caption("Based on US average grid emissions (0.39 kg CO2/kWh) and ~3.8 kWh per Snowflake credit.")
 
 # ============================================================
 # TAB 2: OPERATIONS
 # ============================================================
-elif tab_choice == "Operations":
-    st.header("Operations Center")
+elif "Operations" in tab_choice:
+    st.header("⚙️ Operations Center")
+    st.caption("Manage approvals, view warehouse status, and track automated fixes")
 
     # Pending Approvals
-    st.subheader("Pending Approvals")
+    st.subheader("🔐 Pending Approvals")
     pending = run_query(f"""
         SELECT a.ANOMALY_ID, a.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
                a.CREDITS_WASTED, a.DESCRIPTION, l.SQL_EXECUTED AS PROPOSED_FIX
@@ -231,10 +258,10 @@ elif tab_choice == "Operations":
     else:
         st.success("No pending approvals.")
 
-    st.divider()
+    st.markdown("")
 
     # Warehouse Status
-    st.subheader("Warehouse Status (Live)")
+    st.subheader("🖥️ Warehouse Status (Live)")
     try:
         session.sql("SHOW WAREHOUSES").collect()
         wh_raw = run_query("""
@@ -244,35 +271,44 @@ elif tab_choice == "Operations":
         """)
         if not wh_raw.empty:
             wh_raw["STATUS"] = wh_raw["STATUS"].apply(lambda s: "🟢 RUNNING" if s == "STARTED" else "⏸️ SUSPENDED" if s == "SUSPENDED" else s)
-            st.dataframe(wh_raw, use_container_width=True)
+            for _, wrow in wh_raw.iterrows():
+                wcol1, wcol2, wcol3, wcol4 = st.columns([3, 2, 2, 2])
+                wcol1.markdown(f"**{wrow['WAREHOUSE']}**")
+                wcol2.markdown(f"{wrow['STATUS']}")
+                wcol3.markdown(f"Size: `{wrow['SIZE']}`")
+                wcol4.markdown(f"Suspend: `{wrow['AUTO_SUSPEND_SEC']}s`")
     except Exception:
         pass
 
-    st.divider()
+    st.markdown("")
 
     # Auto-applied fixes
-    st.subheader("Recently Auto-Applied Fixes")
+    st.subheader("🤖 Recently Auto-Applied Fixes")
     auto_fixes = run_query(f"""
         SELECT l.LOGGED_AT, l.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
                ROUND(a.CREDITS_WASTED * {CREDIT_RATE}, 2) AS DOLLAR_SAVED, l.SQL_EXECUTED
         FROM {DB}.{SCHEMA}.AUDIT_LOG l
         JOIN {DB}.{SCHEMA}.USAGE_ANOMALIES a ON a.ANOMALY_ID = l.ANOMALY_ID
         WHERE l.ACTION_TYPE = 'AUTO_ACTION' AND l.STATUS = 'COMPLETED'
-        ORDER BY l.LOGGED_AT DESC LIMIT 15
+        ORDER BY l.LOGGED_AT DESC LIMIT 10
     """)
     if not auto_fixes.empty:
-        st.dataframe(auto_fixes, use_container_width=True)
+        for _, fix in auto_fixes.iterrows():
+            with st.expander(f"{fix['SEVERITY']} | {fix['WAREHOUSE_NAME']} — ${fix['DOLLAR_SAVED']} saved"):
+                st.markdown(f"**Type:** {fix['ANOMALY_TYPE']} | **When:** {fix['LOGGED_AT']}")
+                st.code(fix["SQL_EXECUTED"], language="sql")
     else:
-        st.info("No auto-applied fixes yet.")
+        st.info("No auto-applied fixes yet. Run detection + Apply Fixes to see results.")
 
 # ============================================================
 # TAB 3: INTELLIGENCE
 # ============================================================
-elif tab_choice == "Intelligence":
-    st.header("AI Intelligence")
+elif "Intelligence" in tab_choice:
+    st.header("🧠 AI Intelligence")
+    st.caption("AI-powered insights and cost attribution analysis")
 
     # AI Chat
-    st.subheader("Ask FinOps Guardian")
+    st.subheader("💬 Ask FinOps Guardian")
     user_q = st.text_input("Ask a question about your Snowflake costs...")
     if user_q:
         try:
@@ -294,10 +330,10 @@ elif tab_choice == "Intelligence":
         except Exception as e:
             st.error(f"AI error: {e}")
 
-    st.divider()
+    st.markdown("")
 
     # Cost Attribution
-    st.subheader("Cost Attribution (Top Users - 7 Days)")
+    st.subheader("👥 Cost Attribution (Top Users - 7 Days)")
     try:
         attribution = run_query("""
             SELECT USER_NAME, ROLE_NAME, COUNT(*) AS QUERIES,
@@ -316,10 +352,10 @@ elif tab_choice == "Intelligence":
     except Exception:
         st.info("Requires ACCOUNT_USAGE access.")
 
-    st.divider()
+    st.markdown("")
 
     # Week-over-Week
-    st.subheader("Week-over-Week Comparison")
+    st.subheader("📈 Week-over-Week Comparison")
     try:
         wow = run_query("""
             SELECT WAREHOUSE_NAME,
@@ -347,9 +383,9 @@ elif tab_choice == "Intelligence":
 # ============================================================
 # TAB 4: COMPLIANCE
 # ============================================================
-elif tab_choice == "Compliance":
-    st.header("Policy Compliance")
-    st.caption("Checking warehouse configurations against FinOps best practices.")
+elif "Compliance" in tab_choice:
+    st.header("📋 Policy Compliance")
+    st.caption("Automated checks against FinOps best practices")
 
     try:
         session.sql("SHOW WAREHOUSES").collect()
@@ -420,9 +456,10 @@ elif tab_choice == "Compliance":
             compliance_pct = int((passed_checks / total_checks) * 100) if total_checks > 0 else 100
 
             sc1, sc2, sc3 = st.columns(3)
-            sc1.metric("Compliance Score", f"{compliance_pct}%")
-            sc2.metric("Checks Passed", f"{passed_checks}/{total_checks}")
-            sc3.metric("Issues Found", len(findings))
+            score_icon = "✅" if compliance_pct >= 80 else "⚠️" if compliance_pct >= 50 else "❌"
+            sc1.metric(f"{score_icon} Compliance Score", f"{compliance_pct}%")
+            sc2.metric("✔️ Checks Passed", f"{passed_checks}/{total_checks}")
+            sc3.metric("🔍 Issues Found", len(findings))
 
             st.divider()
 
@@ -456,8 +493,9 @@ elif tab_choice == "Compliance":
 # ============================================================
 # TAB 5: NOTIFICATIONS
 # ============================================================
-elif tab_choice == "Notifications":
-    st.header("Notifications")
+elif "Notifications" in tab_choice:
+    st.header("🔔 Notifications")
+    st.caption("Activity feed for approvals, alerts, and system events")
 
     # Unread count
     notifs = run_query(f"""
@@ -474,9 +512,9 @@ elif tab_choice == "Notifications":
     # Mark all as read button
     n1, n2 = st.columns([3, 1])
     with n1:
-        st.caption(f"{len(unread_notifs)} unread notifications")
+        st.markdown(f"**{len(unread_notifs)}** unread notifications")
     with n2:
-        if st.button("Mark all as read"):
+        if st.button("✓ Mark all read", use_container_width=True):
             session.sql(f"UPDATE {DB}.{SCHEMA}.NOTIFICATIONS SET IS_READ = TRUE WHERE IS_READ = FALSE").collect()
             st.experimental_rerun()
 
@@ -520,9 +558,28 @@ elif tab_choice == "Notifications":
 # ============================================================
 # TAB 6: AUDIT TRAIL
 # ============================================================
-elif tab_choice == "Audit Trail":
-    st.header("Audit Trail")
+elif "Audit Trail" in tab_choice:
+    st.header("📜 Audit Trail")
+    st.caption("Complete history of all detections, actions, and approvals")
 
+    # Summary stats
+    audit_stats = run_query(f"""
+        SELECT
+            COUNT(*) AS TOTAL_ENTRIES,
+            COUNT(CASE WHEN ACTION_TYPE = 'AUTO_ACTION' THEN 1 END) AS AUTO_ACTIONS,
+            COUNT(CASE WHEN ACTION_TYPE = 'USER_ACTION' THEN 1 END) AS MANUAL_ACTIONS,
+            COUNT(CASE WHEN STATUS = 'PENDING_APPROVAL' THEN 1 END) AS PENDING
+        FROM {DB}.{SCHEMA}.AUDIT_LOG
+    """)
+    as1, as2, as3, as4 = st.columns(4)
+    as1.metric("Total Entries", int(audit_stats["TOTAL_ENTRIES"].iloc[0]))
+    as2.metric("🤖 Auto Actions", int(audit_stats["AUTO_ACTIONS"].iloc[0]))
+    as3.metric("👤 Manual Actions", int(audit_stats["MANUAL_ACTIONS"].iloc[0]))
+    as4.metric("⏳ Pending", int(audit_stats["PENDING"].iloc[0]))
+
+    st.markdown("")
+
+    # Filters
     fcol1, fcol2, fcol3 = st.columns(3)
     with fcol1:
         warehouses = run_query(f"""
@@ -551,4 +608,36 @@ elif tab_choice == "Audit Trail":
         FROM {DB}.{SCHEMA}.AUDIT_LOG {where_sql}
         ORDER BY LOGGED_AT DESC LIMIT 50
     """)
-    st.dataframe(audit_log, use_container_width=True)
+
+    if not audit_log.empty:
+        for _, entry in audit_log.iterrows():
+            action = entry["ACTION_TYPE"]
+            if action == "AUTO_ACTION":
+                icon = "🤖"
+            elif action == "USER_ACTION":
+                icon = "👤"
+            elif action == "RECOMMENDATION":
+                icon = "💡"
+            else:
+                icon = "🔍"
+
+            status = entry["STATUS"]
+            if status == "COMPLETED":
+                status_badge = "✅"
+            elif status == "PENDING_APPROVAL":
+                status_badge = "⏳"
+            else:
+                status_badge = "❌"
+
+            with st.expander(f"{icon} {entry['ACTION_TYPE']} | {entry['WAREHOUSE_NAME']} | {status_badge} {status} — {entry['LOGGED_AT']}"):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown(f"**Anomaly ID:** {entry['ANOMALY_ID']}")
+                    st.markdown(f"**Details:** {entry['ACTION_DETAILS']}")
+                    if entry["APPROVED_BY"]:
+                        st.markdown(f"**Approved by:** {entry['APPROVED_BY']}")
+                with col_b:
+                    if entry["SQL_EXECUTED"]:
+                        st.code(entry["SQL_EXECUTED"], language="sql")
+    else:
+        st.info("No audit entries match your filters.")
