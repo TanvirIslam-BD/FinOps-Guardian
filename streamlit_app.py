@@ -1,4 +1,6 @@
 import streamlit as st
+import altair as alt
+import html as _html
 from snowflake.snowpark.context import get_active_session
 from datetime import datetime, timedelta
 
@@ -7,6 +9,44 @@ st.set_page_config(
     page_icon="🛡️",
     layout="wide",
 )
+
+# --- Branded Loading Screen ---
+_loading_placeholder = st.empty()
+_loading_placeholder.markdown("""
+<div id="finops-loader" style="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:99999;
+    background:linear-gradient(135deg, #0f0c29 0%, #1a1a3e 50%, #24243e 100%);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;">
+    <div style="text-align:center;">
+        <div style="width:64px;height:64px;margin:0 auto 20px auto;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+            border-radius:16px;display:flex;align-items:center;justify-content:center;
+            box-shadow:0 8px 32px rgba(102,126,234,0.4);animation:pulse 2s ease-in-out infinite;">
+            <span style="font-size:2rem;">🛡️</span>
+        </div>
+        <div style="font-size:1.6rem;font-weight:700;background:linear-gradient(135deg,#667eea,#a78bfa);
+            -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px;">
+            FinOps Guardian
+        </div>
+        <div style="color:#8b8fa3;font-size:0.85rem;letter-spacing:0.5px;margin-bottom:28px;">
+            AI-Powered Cost Intelligence
+        </div>
+        <div style="display:flex;gap:6px;justify-content:center;">
+            <div style="width:8px;height:8px;border-radius:50%;background:#667eea;animation:bounce 1.4s ease-in-out infinite;"></div>
+            <div style="width:8px;height:8px;border-radius:50%;background:#764ba2;animation:bounce 1.4s ease-in-out 0.2s infinite;"></div>
+            <div style="width:8px;height:8px;border-radius:50%;background:#a78bfa;animation:bounce 1.4s ease-in-out 0.4s infinite;"></div>
+        </div>
+    </div>
+</div>
+<style>
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+@keyframes bounce {
+    0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+    40% { transform: translateY(-10px); opacity: 1; }
+}
+</style>
+""", unsafe_allow_html=True)
 
 # --- Custom CSS for Reference Design ---
 st.markdown("""
@@ -21,32 +61,52 @@ header[data-testid="stHeader"] {
 }
 
 /* Force light theme for entire app */
-.stApp, .main, .main .block-container {
+.stApp, .main, .main .block-container,
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] > div {
     background-color: #F8F9FB !important;
     color: #1a1a2e !important;
 }
 .stApp [data-testid="stMarkdownContainer"] p,
 .stApp [data-testid="stMarkdownContainer"] h1,
 .stApp [data-testid="stMarkdownContainer"] h2,
-.stApp [data-testid="stMarkdownContainer"] h3 {
+.stApp [data-testid="stMarkdownContainer"] h3,
+.stApp [data-testid="stMetricLabel"],
+.stApp [data-testid="stMetricValue"],
+.stApp [data-testid="stMetricDelta"],
+.stApp [data-testid="stCaption"],
+.stApp label, .stApp span {
     color: #1a1a2e !important;
 }
 
 /* Override Streamlit CSS variables for light theme */
-:root, .stApp {
+:root, .stApp, html, body {
     --background-color: #F8F9FB !important;
     --secondary-background-color: #FFFFFF !important;
     --text-color: #1a1a2e !important;
     --font: "Source Sans Pro", sans-serif !important;
+    --primary-color: #667eea !important;
+    color-scheme: light !important;
 }
 .stApp {
     background: #F8F9FB !important;
 }
-section[data-testid="stSidebar"] > div {
-    background: #FFFFFF !important;
+
+/* Force charts to light background */
+[data-testid="stVegaLiteChart"],
+[data-testid="stArrowVegaLiteChart"],
+.vega-embed, .vega-embed canvas,
+[data-testid="stVegaLiteChart"] canvas,
+[data-testid="stArrowVegaLiteChart"] canvas {
+    background-color: #FFFFFF !important;
+    border-radius: 8px;
 }
 
-/* Sidebar styling - force light theme */
+/* Sidebar force white */
+section[data-testid="stSidebar"],
+section[data-testid="stSidebar"] > div,
+section[data-testid="stSidebar"] > div > div,
+section[data-testid="stSidebar"] > div > div > div,
 [data-testid="stSidebar"],
 [data-testid="stSidebar"] > div,
 [data-testid="stSidebar"] > div > div {
@@ -72,42 +132,52 @@ section[data-testid="stSidebar"] > div {
 [data-testid="stSidebar"] span,
 [data-testid="stSidebar"] label,
 [data-testid="stSidebar"] .stMarkdown,
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
-    color: inherit !important;
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stSidebar"] button,
+[data-testid="stSidebar"] [data-testid="stCaption"] {
+    color: #374151 !important;
+}
+[data-testid="stSidebar"] .stButton > button {
+    background: #FFFFFF !important;
+    color: #374151 !important;
+    border: 1px solid #D1D5DB !important;
 }
 
 /* Radio buttons as nav items - styled with active/inactive states */
 [data-testid="stSidebar"] .stRadio > div {
-    gap: 2px !important;
+    gap: 0px !important;
 }
 [data-testid="stSidebar"] .stRadio > div > label {
-    padding: 11px 16px !important;
+    padding: 6px 12px !important;
     margin: 0 !important;
-    border-radius: 8px !important;
+    border-radius: 6px !important;
     border-left: 3px solid transparent !important;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    font-size: 0.88rem !important;
-    color: #4B5563 !important;
-    font-weight: 400 !important;
+    transition: all 0.15s ease;
+    font-size: 0.82rem !important;
+    color: #1F2937 !important;
+    font-weight: 500 !important;
     background: transparent !important;
     cursor: pointer;
     width: 100% !important;
     display: block !important;
     box-sizing: border-box !important;
+    min-height: unset !important;
+    line-height: 1.3 !important;
+}
+[data-testid="stSidebar"] .stRadio > div > label * {
+    color: #1F2937 !important;
 }
 [data-testid="stSidebar"] .stRadio > div > label > div:first-child {
     display: none !important;
 }
-[data-testid="stSidebar"] .stRadio > div > label > div[data-testid="stMarkdownContainer"] p {
-    color: #4B5563 !important;
-}
 [data-testid="stSidebar"] .stRadio > div > label:hover {
     background: rgba(102, 126, 234, 0.08) !important;
-    color: #1F2937 !important;
     border-left: 3px solid rgba(102, 126, 234, 0.4) !important;
+    border-radius: 6px !important;
 }
-[data-testid="stSidebar"] .stRadio > div > label:hover > div[data-testid="stMarkdownContainer"] p {
-    color: #1F2937 !important;
+[data-testid="stSidebar"] .stRadio > div > label:hover * {
+    color: #111827 !important;
 }
 
 /* Button styling */
@@ -142,6 +212,90 @@ section[data-testid="stSidebar"] > div {
 [data-testid="stSelectbox"] > div > div {
     border-radius: 8px;
     font-size: 0.85rem;
+}
+
+/* Force light theme on ALL form inputs, code blocks, buttons, selects */
+[data-testid="stTextInput"] > div > div > input,
+[data-testid="stTextInput"] input,
+.stTextInput input {
+    background-color: #FFFFFF !important;
+    color: #1a1a2e !important;
+    caret-color: #1a1a2e !important;
+    border: 1.5px solid #E5E7EB !important;
+    border-radius: 12px !important;
+    padding: 12px 16px !important;
+    font-size: 0.9rem !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04) !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+[data-testid="stTextInput"] > div > div > input:focus,
+[data-testid="stTextInput"] input:focus,
+.stTextInput input:focus {
+    border-color: #667eea !important;
+    box-shadow: 0 0 0 3px rgba(102,126,234,0.12), 0 2px 8px rgba(102,126,234,0.08) !important;
+    outline: none !important;
+}
+[data-testid="stTextInput"] input::placeholder {
+    color: #9CA3AF !important;
+    opacity: 1 !important;
+}
+[data-testid="stSelectbox"] > div > div,
+[data-testid="stSelectbox"] > div > div > div,
+[data-testid="stSelectbox"] [data-baseweb="select"],
+[data-baseweb="select"] > div,
+[data-baseweb="popover"] > div,
+[data-baseweb="menu"],
+[data-baseweb="menu"] ul,
+[data-baseweb="menu"] li {
+    background-color: #FFFFFF !important;
+    color: #1a1a2e !important;
+}
+[data-baseweb="select"] > div {
+    border: 1px solid #D1D5DB !important;
+    border-radius: 8px !important;
+}
+/* Code blocks force light */
+[data-testid="stCode"],
+[data-testid="stCode"] > div,
+[data-testid="stCode"] pre,
+[data-testid="stCode"] code,
+.stCodeBlock, .stCodeBlock pre, .stCodeBlock code,
+pre, code {
+    background-color: #F8F9FB !important;
+    color: #1a1a2e !important;
+    border: 1px solid #E8ECF0 !important;
+    border-radius: 8px !important;
+}
+/* Buttons force light */
+.stButton > button {
+    background-color: #FFFFFF !important;
+    color: #374151 !important;
+    border: 1px solid #D1D5DB !important;
+}
+.stButton > button[data-testid="baseButton-primary"],
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    color: #FFFFFF !important;
+    border: none !important;
+}
+/* Expander light */
+[data-testid="stExpander"],
+[data-testid="stExpander"] > details,
+[data-testid="stExpander"] > details > summary,
+[data-testid="stExpander"] > details > div {
+    background-color: #FFFFFF !important;
+    color: #1a1a2e !important;
+    border-color: #E8ECF0 !important;
+}
+/* Dataframe/table light */
+[data-testid="stDataFrame"],
+[data-testid="stTable"],
+.stDataFrame, .stTable {
+    background-color: #FFFFFF !important;
+}
+/* Info/warning/error boxes */
+[data-testid="stAlert"] > div {
+    color: #1a1a2e !important;
 }
 
 /* Smooth content transitions */
@@ -233,23 +387,6 @@ def render_kpi_card(icon_emoji, icon_bg, label, value, delta_text="", delta_posi
     </div>"""
 
 
-def render_chart_card(title, chart_placeholder_id=""):
-    """Render opening HTML for a chart card container."""
-    return f"""
-    <div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:20px;margin-bottom:16px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:0.95rem;font-weight:600;color:#1a1a2e;">{title}</span>
-                <span style="color:#aaa;font-size:0.8rem;">ℹ️</span>
-            </div>
-            <div style="display:flex;gap:8px;">
-                <span style="background:#F3F4F6;padding:4px 10px;border-radius:6px;font-size:0.75rem;color:#555;">USD</span>
-                <span style="background:#F3F4F6;padding:4px 10px;border-radius:6px;font-size:0.75rem;color:#555;">Last 7 Days</span>
-            </div>
-        </div>
-    </div>"""
-
-
 def render_health_card(name, score, state="STARTED"):
     """Render a warehouse health card with progress bar."""
     if score >= 80:
@@ -292,37 +429,47 @@ if "nav_index" not in st.session_state:
 with st.sidebar:
     # Logo + Name inline
     st.markdown("""
-    <div style="display:flex;align-items:center;gap:10px;padding:0 4px 12px 4px;">
-        <div style="width:38px;height:38px;min-width:38px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(102,126,234,0.3);">
-            <span style="font-size:1.2rem;line-height:38px;">🛡️</span>
+    <div style="display:flex;align-items:center;gap:8px;padding:0 4px 8px 4px;">
+        <div style="width:32px;height:32px;min-width:32px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:8px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(102,126,234,0.3);">
+            <span style="font-size:1rem;line-height:32px;">🛡️</span>
         </div>
         <div>
-            <div style="font-size:1.05rem;font-weight:700;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.2;">FinOps Guardian</div>
-            <div style="font-size:0.65rem;color:#999;letter-spacing:0.3px;">Expense Intelligence ✨</div>
+            <div style="font-size:0.95rem;font-weight:700;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.2;">FinOps Guardian</div>
+            <div style="font-size:0.6rem;color:#999;letter-spacing:0.3px;">Expense Intelligence ✨</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     # Quick Stats
-    notif_count = run_query_cached(session, f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.NOTIFICATIONS WHERE IS_READ = FALSE")
-    unread = int(notif_count["CNT"].iloc[0])
+    try:
+        notif_count = run_query_cached(session, f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.NOTIFICATIONS WHERE IS_READ = FALSE")
+        unread = int(notif_count["CNT"].iloc[0])
+    except Exception:
+        unread = 0
 
-    open_count = run_query_cached(session, f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.USAGE_ANOMALIES WHERE STATUS IN ('OPEN','ACKNOWLEDGED')")
-    open_issues = int(open_count["CNT"].iloc[0])
+    try:
+        open_count = run_query_cached(session, f"SELECT COUNT(*) AS CNT FROM {DB}.{SCHEMA}.USAGE_ANOMALIES WHERE STATUS IN ('OPEN','ACKNOWLEDGED')")
+        open_issues = int(open_count["CNT"].iloc[0])
+    except Exception:
+        open_issues = 0
 
-    wh_count = run_query("SHOW WAREHOUSES")
-    servers = len(wh_count) if not wh_count.empty else 3
+    try:
+        session.sql("SHOW WAREHOUSES").collect()
+        wh_df = run_query("SELECT COUNT(*) AS CNT FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))")
+        warehouses_total = int(wh_df["CNT"].iloc[0])
+    except Exception:
+        warehouses_total = 0
 
-    st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:4px 0 8px 0;font-weight:600;">Quick Stats</div>""", unsafe_allow_html=True)
+    st.markdown("""<div style="font-size:0.62rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:2px 0 4px 0;font-weight:600;">Quick Stats</div>""", unsafe_allow_html=True)
     st.markdown(f"""
-    <div style="display:flex;gap:8px;margin:0 0 12px 0;">
-        <div style="flex:1;background:rgba(102,126,234,0.04);border:1px solid rgba(102,126,234,0.12);border-radius:10px;padding:10px 12px;text-align:center;">
-            <div style="font-size:1.4rem;font-weight:700;color:#DC2626;margin-bottom:2px;">🖥 {servers}</div>
-            <div style="font-size:0.65rem;color:#888;font-weight:500;">Servers</div>
+    <div style="display:flex;gap:6px;margin:0 0 8px 0;">
+        <div style="flex:1;background:rgba(102,126,234,0.04);border:1px solid rgba(102,126,234,0.12);border-radius:8px;padding:6px 10px;text-align:center;">
+            <div style="font-size:1.1rem;font-weight:700;color:#DC2626;margin-bottom:1px;">🖥 {warehouses_total}</div>
+            <div style="font-size:0.6rem;color:#888;font-weight:500;">Warehouses</div>
         </div>
-        <div style="flex:1;background:rgba(102,126,234,0.04);border:1px solid rgba(102,126,234,0.12);border-radius:10px;padding:10px 12px;text-align:center;">
-            <div style="font-size:1.4rem;font-weight:700;color:#667eea;margin-bottom:2px;">👥 {unread}</div>
-            <div style="font-size:0.65rem;color:#888;font-weight:500;">Users</div>
+        <div style="flex:1;background:rgba(102,126,234,0.04);border:1px solid rgba(102,126,234,0.12);border-radius:8px;padding:6px 10px;text-align:center;">
+            <div style="font-size:1.1rem;font-weight:700;color:#667eea;margin-bottom:1px;">⚠️ {open_issues}</div>
+            <div style="font-size:0.6rem;color:#888;font-weight:500;">Open Issues</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -334,7 +481,7 @@ with st.sidebar:
             st.experimental_rerun()
 
     # Navigation
-    st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:18px 0 6px 0;font-weight:600;">Navigation</div>""", unsafe_allow_html=True)
+    st.markdown("""<div style="font-size:0.62rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:10px 0 4px 0;font-weight:600;">Navigation</div>""", unsafe_allow_html=True)
     notif_label = f"🔔 Notifications ({unread})" if unread > 0 else "🔔 Notifications"
     nav_options = [
         "📊 Executive Summary",
@@ -364,32 +511,32 @@ with st.sidebar:
         font-weight: 600 !important;
         box-shadow: 0 1px 3px rgba(102,126,234,0.08) !important;
     }}
-    [data-testid="stSidebar"] .stRadio > div > label:nth-child({active_nth}) > div[data-testid="stMarkdownContainer"] p {{
+    [data-testid="stSidebar"] .stRadio > div > label:nth-child({active_nth}) * {{
         color: #4338CA !important;
         font-weight: 600 !important;
     }}
     </style>""", unsafe_allow_html=True)
 
     # Quick Actions
-    st.markdown("""<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:22px 0 6px 0;font-weight:600;">Quick Actions</div>""", unsafe_allow_html=True)
+    st.markdown("""<div style="font-size:0.62rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:12px 0 4px 0;font-weight:600;">Quick Actions</div>""", unsafe_allow_html=True)
     st.caption("Shortcuts for common tasks")
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("📤 Upload Scan", use_container_width=True):
-            r = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
-            st.success(r[0][0])
+        if st.button("📤 Run Detection", use_container_width=True):
+            with st.spinner("Detecting..."):
+                session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
             st.experimental_rerun()
     with col_b:
-        if st.button("📋 Explorer", use_container_width=True):
-            r = session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
-            st.success(r[0][0])
+        if st.button("📋 Cost Spikes", use_container_width=True):
+            with st.spinner("Scanning..."):
+                session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
             st.experimental_rerun()
-    if st.button("+ New Scan", use_container_width=True, type="primary"):
-        r = session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
-        st.success(r[0][0])
+    if st.button("+ Apply Fixes", use_container_width=True, type="primary"):
+        with st.spinner("Applying fixes..."):
+            session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
         st.experimental_rerun()
 
-    st.selectbox("Scan Profile", ["Default", "Cost Optimization", "Idle Detection", "Full Audit"], label_visibility="visible")
+    st.selectbox("Scan Profile", ["Default", "Cost Optimization", "Idle Detection", "Full Audit"], label_visibility="visible", key="scan_profile")
 
     with st.expander("🔄 Reset Demo"):
         st.caption("Clears all data and re-runs full pipeline")
@@ -406,7 +553,7 @@ with st.sidebar:
     # Footer
     st.markdown("""
     <div style="text-align:center;margin-top:24px;padding-top:12px;border-top:1px solid #E8ECF0;">
-        <p style="color:#888;font-size:0.68rem;margin:0;">© 2025 FinOps Guardian</p>
+        <p style="color:#888;font-size:0.68rem;margin:0;">\u00a9 2025 FinOps Guardian</p>
         <p style="color:#bbb;font-size:0.6rem;margin:2px 0 0 0;">All rights reserved</p>
     </div>
     """, unsafe_allow_html=True)
@@ -414,6 +561,7 @@ with st.sidebar:
 
 # --- Page Header ---
 def render_page_header(title, emoji):
+    _content_spinner.empty()
     today = datetime.now()
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
@@ -435,6 +583,21 @@ def render_page_header(title, emoji):
 # ============================================================
 # TAB 1: EXECUTIVE SUMMARY
 # ============================================================
+_loading_placeholder.empty()
+
+# Show loading spinner during tab content rendering
+_content_spinner = st.empty()
+_content_spinner.markdown("""
+<div style="display:flex;align-items:center;justify-content:center;padding:60px 0;">
+    <div style="text-align:center;">
+        <div style="display:inline-block;width:36px;height:36px;border:3px solid #E5E7EB;border-top:3px solid #667eea;
+            border-radius:50%;animation:spin 0.8s linear infinite;margin-bottom:12px;"></div>
+        <div style="color:#667eea;font-size:0.85rem;font-weight:500;">Loading...</div>
+    </div>
+</div>
+<style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style>
+""", unsafe_allow_html=True)
+
 if "Executive Summary" in tab_choice:
     render_page_header("Executive Summary", "📊")
 
@@ -481,10 +644,17 @@ if "Executive Summary" in tab_choice:
                 </div>
             </div>
         </div>""", unsafe_allow_html=True)
-        savings = run_query_cached(session, f"SELECT SNAPSHOT_DATE, DOLLAR_SAVED FROM {DB}.{SCHEMA}.SAVINGS_HISTORY ORDER BY SNAPSHOT_DATE")
-        if not savings.empty:
-            st.line_chart(savings.set_index("SNAPSHOT_DATE"))
-        else:
+        try:
+            savings = run_query_cached(session, f"SELECT SNAPSHOT_DATE, DOLLAR_SAVED FROM {DB}.{SCHEMA}.SAVINGS_HISTORY ORDER BY SNAPSHOT_DATE")
+            if not savings.empty:
+                c = alt.Chart(savings).mark_line(color='#667eea', strokeWidth=2).encode(
+                    x=alt.X('SNAPSHOT_DATE:T', title='Date'),
+                    y=alt.Y('DOLLAR_SAVED:Q', title='Dollars Saved')
+                ).properties(height=300).configure_view(fill='#FFFFFF', stroke=None).configure(background='#FFFFFF').configure_axis(labelColor='#374151', titleColor='#374151', gridColor='#E5E7EB')
+                st.altair_chart(c, use_container_width=True)
+            else:
+                st.info("No savings history yet. Run detection + apply fixes to populate.")
+        except Exception:
             st.info("No savings history yet. Run detection + apply fixes to populate.")
 
     with ch2:
@@ -502,8 +672,12 @@ if "Executive Summary" in tab_choice:
             FROM {DB}.{SCHEMA}.USAGE_ANOMALIES GROUP BY 1, 2 ORDER BY CREDITS DESC
         """)
         if not chart_data.empty:
-            pivot = chart_data.pivot_table(index="WAREHOUSE_NAME", columns="ANOMALY_TYPE", values="CREDITS", aggfunc="sum").fillna(0)
-            st.bar_chart(pivot)
+            c = alt.Chart(chart_data).mark_bar().encode(
+                x=alt.X('WAREHOUSE_NAME:N', title='Warehouse'),
+                y=alt.Y('CREDITS:Q', title='Credits'),
+                color=alt.Color('ANOMALY_TYPE:N', scale=alt.Scale(range=['#667eea', '#a78bfa']))
+            ).properties(height=300).configure_view(fill='#FFFFFF', stroke=None).configure(background='#FFFFFF').configure_axis(labelColor='#374151', titleColor='#374151', gridColor='#E5E7EB')
+            st.altair_chart(c, use_container_width=True)
 
     st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
@@ -517,7 +691,7 @@ if "Executive Summary" in tab_choice:
 
     try:
         session.sql("SHOW WAREHOUSES").collect()
-        wh_all = run_query_cached(session, """
+        wh_all = run_query("""
             SELECT "name" AS WH, "state" AS STATE, "size" AS SIZE,
                    "auto_suspend" AS AUTO_SUSPEND, "running" AS RUNNING
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
@@ -580,11 +754,126 @@ if "Executive Summary" in tab_choice:
 elif "Operations" in tab_choice:
     render_page_header("Operations Center", "⚙️")
 
+    # --- Smart Alerts: Natural Language (Top of Operations) ---
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,rgba(245,158,11,0.04) 0%,rgba(251,191,36,0.04) 100%);
+        border:1px solid rgba(245,158,11,0.18);border-radius:16px;padding:24px 28px;margin-bottom:24px;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+            <div style="width:40px;height:40px;background:linear-gradient(135deg,#F59E0B 0%,#D97706 100%);
+                border-radius:12px;display:flex;align-items:center;justify-content:center;
+                box-shadow:0 4px 12px rgba(245,158,11,0.3);">
+                <span style="font-size:1.2rem;">🔔</span>
+            </div>
+            <div>
+                <div style="font-size:1.05rem;font-weight:700;color:#1a1a2e;">Smart Alerts</div>
+                <div style="font-size:0.75rem;color:#6B7280;">Create monitoring rules in plain English — AI parses them into structured alerts</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    alert_input = st.text_input("Describe your alert rule...", placeholder="e.g. Notify me if any warehouse spends more than $50 per day", key="alert_nl", label_visibility="collapsed")
+
+    if alert_input:
+        try:
+            import json as _json
+            parse_prompt = (
+                "Parse this monitoring alert rule into JSON. Return ONLY valid JSON, no explanation.\\n"
+                "Format: {\"metric\": \"...\", \"threshold\": ..., \"warehouse\": \"...\", \"condition\": \"...\"}\\n"
+                "Valid metrics: daily_spend, weekly_spend, credits_per_hour, idle_minutes, query_count\\n"
+                "Valid conditions: greater_than, less_than, equals\\n"
+                "If no warehouse specified, use ANY.\\n\\n"
+                f"Rule: {alert_input}"
+            )
+            safe_parse = parse_prompt.replace("'", "''")
+            with st.spinner("🧠 Parsing alert rule..."):
+                parse_result = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{safe_parse}') AS RESPONSE")
+            raw_response = parse_result["RESPONSE"].iloc[0]
+
+            json_start = raw_response.find("{")
+            json_end = raw_response.rfind("}") + 1
+            parsed = _json.loads(raw_response[json_start:json_end])
+
+            metric = parsed.get("metric", "daily_spend")
+            threshold = float(parsed.get("threshold", 0))
+            warehouse = parsed.get("warehouse", "ANY")
+            condition = parsed.get("condition", "greater_than")
+
+            cond_symbol = ">" if condition == "greater_than" else "<" if condition == "less_than" else "="
+            metric_icon = "💰" if "spend" in metric else "⏱" if "idle" in metric or "hour" in metric else "📊"
+
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #E8ECF0;border-radius:14px;padding:18px 22px;margin-top:12px;
+                box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+                    <span style="font-size:0.8rem;color:#667eea;font-weight:600;">🤖 Parsed Alert Rule</span>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+                    <span style="background:rgba(102,126,234,0.08);color:#4338CA;padding:5px 14px;border-radius:20px;font-size:0.78rem;font-weight:500;">{metric_icon} {metric}</span>
+                    <span style="background:rgba(220,38,38,0.08);color:#DC2626;padding:5px 14px;border-radius:20px;font-size:0.78rem;font-weight:500;">{cond_symbol} {threshold}</span>
+                    <span style="background:rgba(22,163,74,0.08);color:#16A34A;padding:5px 14px;border-radius:20px;font-size:0.78rem;font-weight:500;">🖥 {warehouse}</span>
+                </div>
+                <div style="font-size:0.8rem;color:#6B7280;font-style:italic;">"{alert_input}"</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("✅ Activate Alert", type="primary", key="activate_alert"):
+                safe_rule = alert_input.replace("'", "''")
+                safe_wh = warehouse.replace("'", "''")
+                session.sql(f"""
+                    INSERT INTO {DB}.{SCHEMA}.SMART_ALERTS (NATURAL_LANGUAGE_RULE, PARSED_METRIC, PARSED_THRESHOLD, PARSED_WAREHOUSE, PARSED_CONDITION)
+                    VALUES ('{safe_rule}', '{metric}', {threshold}, '{safe_wh}', '{condition}')
+                """).collect()
+                st.success("Alert activated!")
+                st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Could not parse alert: {e}")
+
+    # Show active alerts
+    try:
+        active_alerts = run_query(f"SELECT * FROM {DB}.{SCHEMA}.SMART_ALERTS WHERE IS_ACTIVE = TRUE ORDER BY CREATED_AT DESC")
+    except Exception:
+        active_alerts = None
+    if active_alerts is not None and not active_alerts.empty:
+        st.markdown(f"""<div style="font-size:0.9rem;font-weight:600;color:#1a1a2e;margin:16px 0 10px 0;">Active Alerts ({len(active_alerts)})</div>""", unsafe_allow_html=True)
+        for _, alert in active_alerts.iterrows():
+            a_metric = alert["PARSED_METRIC"]
+            a_thresh = alert["PARSED_THRESHOLD"]
+            a_wh = alert["PARSED_WAREHOUSE"]
+            a_cond = alert["PARSED_CONDITION"]
+            a_rule = alert["NATURAL_LANGUAGE_RULE"]
+            a_id = int(alert["ALERT_ID"])
+            triggered = alert["TRIGGER_COUNT"]
+
+            cond_sym = ">" if a_cond == "greater_than" else "<" if a_cond == "less_than" else "="
+            status_badge = f'<span style="background:rgba(22,163,74,0.1);color:#16A34A;padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:500;">🟢 Active</span>' if triggered == 0 else f'<span style="background:rgba(220,38,38,0.1);color:#DC2626;padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:500;">🔴 Triggered ({triggered}x)</span>'
+
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #E8ECF0;border-radius:12px;padding:14px 18px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span style="font-size:0.82rem;font-weight:500;color:#1a1a2e;">{_html.escape(a_rule)}</span>
+                    {status_badge}
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <span style="background:#F3F4F6;padding:3px 10px;border-radius:12px;font-size:0.72rem;color:#555;">{a_metric} {cond_sym} {a_thresh}</span>
+                    <span style="background:#F3F4F6;padding:3px 10px;border-radius:12px;font-size:0.72rem;color:#555;">🖥 {a_wh}</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button(f"🗑 Delete", key=f"del_alert_{a_id}"):
+                session.sql(f"UPDATE {DB}.{SCHEMA}.SMART_ALERTS SET IS_ACTIVE = FALSE WHERE ALERT_ID = {a_id}").collect()
+                st.experimental_rerun()
+    elif active_alerts is None or active_alerts.empty:
+        st.markdown("""<div style="background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:12px;padding:20px;text-align:center;color:#9CA3AF;font-size:0.85rem;">No active alerts yet. Describe a rule above to get started!</div>""", unsafe_allow_html=True)
+
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+
     # Warehouse Status
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🖥️ Warehouse Status (Live)</div>""", unsafe_allow_html=True)
     try:
         session.sql("SHOW WAREHOUSES").collect()
-        wh_raw = run_query_cached(session, """
+        wh_raw = run_query("""
             SELECT "name" AS WAREHOUSE, "state" AS STATUS, "size" AS SIZE,
                    "auto_suspend" AS AUTO_SUSPEND_SEC, "running" AS RUNNING, "queued" AS QUEUED
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
@@ -627,102 +916,6 @@ elif "Operations" in tab_choice:
                 st.code(fix["SQL_EXECUTED"], language="sql")
     else:
         st.info("No auto-applied fixes yet. Run detection + Apply Fixes to see results.")
-
-    # Footer
-    # --- Smart Alerts: Natural Language ---
-    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
-    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:4px;">🔔 Smart Alerts — Natural Language</div>""", unsafe_allow_html=True)
-    st.markdown("""<p style="color:#888;font-size:0.82rem;margin-bottom:12px;">Create monitoring rules in plain English. AI parses them into structured alerts.</p>""", unsafe_allow_html=True)
-
-    alert_input = st.text_input("Describe your alert rule...", placeholder="e.g. Notify me if any warehouse spends more than $50 per day", key="alert_nl")
-
-    if alert_input:
-        try:
-            import json as _json
-            parse_prompt = (
-                "Parse this monitoring alert rule into JSON. Return ONLY valid JSON, no explanation.\\n"
-                "Format: {\"metric\": \"...\", \"threshold\": ..., \"warehouse\": \"...\", \"condition\": \"...\"}\\n"
-                "Valid metrics: daily_spend, weekly_spend, credits_per_hour, idle_minutes, query_count\\n"
-                "Valid conditions: greater_than, less_than, equals\\n"
-                "If no warehouse specified, use ANY.\\n\\n"
-                f"Rule: {alert_input}"
-            )
-            safe_parse = parse_prompt.replace("'", "\\'")
-            parse_result = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{safe_parse}') AS RESPONSE")
-            raw_response = parse_result["RESPONSE"].iloc[0]
-
-            # Extract JSON from response
-            json_start = raw_response.find("{")
-            json_end = raw_response.rfind("}") + 1
-            parsed = _json.loads(raw_response[json_start:json_end])
-
-            metric = parsed.get("metric", "daily_spend")
-            threshold = float(parsed.get("threshold", 0))
-            warehouse = parsed.get("warehouse", "ANY")
-            condition = parsed.get("condition", "greater_than")
-
-            cond_symbol = ">" if condition == "greater_than" else "<" if condition == "less_than" else "="
-            metric_icon = "💰" if "spend" in metric else "⏱" if "idle" in metric or "hour" in metric else "📊"
-
-            st.markdown(f"""
-            <div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 20px;margin-top:12px;">
-                <div style="font-size:0.75rem;color:#667eea;font-weight:500;margin-bottom:10px;">🤖 Parsed Alert Rule</div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
-                    <span style="background:rgba(102,126,234,0.08);color:#4338CA;padding:4px 12px;border-radius:6px;font-size:0.8rem;font-weight:500;">{metric_icon} {metric}</span>
-                    <span style="background:rgba(220,38,38,0.08);color:#DC2626;padding:4px 12px;border-radius:6px;font-size:0.8rem;font-weight:500;">{cond_symbol} {threshold}</span>
-                    <span style="background:rgba(22,163,74,0.08);color:#16A34A;padding:4px 12px;border-radius:6px;font-size:0.8rem;font-weight:500;">🖥 {warehouse}</span>
-                </div>
-                <div style="font-size:0.82rem;color:#555;">"{alert_input}"</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            if st.button("✅ Activate Alert", type="primary", key="activate_alert"):
-                safe_rule = alert_input.replace("'", "''")
-                safe_wh = warehouse.replace("'", "''")
-                session.sql(f"""
-                    INSERT INTO {DB}.{SCHEMA}.SMART_ALERTS (NATURAL_LANGUAGE_RULE, PARSED_METRIC, PARSED_THRESHOLD, PARSED_WAREHOUSE, PARSED_CONDITION)
-                    VALUES ('{safe_rule}', '{metric}', {threshold}, '{safe_wh}', '{condition}')
-                """).collect()
-                st.success("Alert activated!")
-                st.experimental_rerun()
-        except Exception as e:
-            st.error(f"Could not parse alert: {e}")
-
-    # Show active alerts
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    active_alerts = run_query(f"SELECT * FROM {DB}.{SCHEMA}.SMART_ALERTS WHERE IS_ACTIVE = TRUE ORDER BY CREATED_AT DESC")
-    if not active_alerts.empty:
-        st.markdown(f"""<div style="font-size:0.9rem;font-weight:600;color:#1a1a2e;margin-bottom:10px;">Active Alerts ({len(active_alerts)})</div>""", unsafe_allow_html=True)
-        for _, alert in active_alerts.iterrows():
-            a_metric = alert["PARSED_METRIC"]
-            a_thresh = alert["PARSED_THRESHOLD"]
-            a_wh = alert["PARSED_WAREHOUSE"]
-            a_cond = alert["PARSED_CONDITION"]
-            a_rule = alert["NATURAL_LANGUAGE_RULE"]
-            a_id = int(alert["ALERT_ID"])
-            triggered = alert["TRIGGER_COUNT"]
-
-            cond_sym = ">" if a_cond == "greater_than" else "<" if a_cond == "less_than" else "="
-            status_badge = f'<span style="background:rgba(22,163,74,0.1);color:#16A34A;padding:3px 10px;border-radius:6px;font-size:0.72rem;font-weight:500;">🟢 Active</span>' if triggered == 0 else f'<span style="background:rgba(220,38,38,0.1);color:#DC2626;padding:3px 10px;border-radius:6px;font-size:0.72rem;font-weight:500;">🔴 Triggered ({triggered}x)</span>'
-
-            st.markdown(f"""
-            <div style="background:#fff;border:1px solid #E8ECF0;border-radius:10px;padding:14px 18px;margin-bottom:8px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                    <span style="font-size:0.82rem;font-weight:500;color:#1a1a2e;">{a_rule}</span>
-                    {status_badge}
-                </div>
-                <div style="display:flex;gap:6px;">
-                    <span style="background:#F3F4F6;padding:3px 8px;border-radius:4px;font-size:0.72rem;color:#555;">{a_metric} {cond_sym} {a_thresh}</span>
-                    <span style="background:#F3F4F6;padding:3px 8px;border-radius:4px;font-size:0.72rem;color:#555;">🖥 {a_wh}</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            if st.button(f"🗑 Delete", key=f"del_alert_{a_id}"):
-                session.sql(f"UPDATE {DB}.{SCHEMA}.SMART_ALERTS SET IS_ACTIVE = FALSE WHERE ALERT_ID = {a_id}").collect()
-                st.experimental_rerun()
-    else:
-        st.markdown("""<div style="background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:10px;padding:20px;text-align:center;color:#888;font-size:0.85rem;">No active alerts yet. Create one above using natural language!</div>""", unsafe_allow_html=True)
 
     st.markdown("""
     <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
@@ -833,9 +1026,67 @@ elif "Approvals" in tab_choice:
 elif "Intelligence" in tab_choice:
     render_page_header("AI Intelligence", "🧠")
 
-    # AI Chat
-    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">💬 Ask FinOps Guardian</div>""", unsafe_allow_html=True)
-    user_q = st.text_input("Ask a question about your Snowflake costs...")
+    # AI Chat - Modern Card UI
+    st.markdown("""
+    <style>
+    /* Suggestion chip buttons */
+    div[data-testid="stHorizontalBlock"]:has(button[kind="secondary"]) button {
+        border-radius: 20px !important;
+        font-size: 0.78rem !important;
+        padding: 8px 16px !important;
+        border: 1px solid #E5E7EB !important;
+        background: #FFFFFF !important;
+        color: #374151 !important;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.04) !important;
+        transition: all 0.2s !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(button[kind="secondary"]) button:hover {
+        border-color: #667eea !important;
+        color: #667eea !important;
+        background: rgba(102,126,234,0.04) !important;
+        box-shadow: 0 2px 8px rgba(102,126,234,0.12) !important;
+    }
+    </style>
+    <div style="background:linear-gradient(135deg,rgba(102,126,234,0.04) 0%,rgba(118,75,162,0.04) 100%);
+        border:1px solid rgba(102,126,234,0.15);border-radius:16px;padding:24px 28px 12px 28px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;">
+            <div style="width:42px;height:42px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+                border-radius:12px;display:flex;align-items:center;justify-content:center;
+                box-shadow:0 4px 12px rgba(102,126,234,0.3);">
+                <span style="font-size:1.3rem;">🤖</span>
+            </div>
+            <div>
+                <div style="font-size:1.1rem;font-weight:700;color:#1a1a2e;">Ask FinOps Guardian</div>
+                <div style="font-size:0.75rem;color:#6B7280;">AI-powered cost insights · Powered by Snowflake Cortex</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Suggestion chips as buttons
+    _suggestions = [
+        "💰 Which warehouse costs the most?",
+        "📉 How to reduce idle compute?",
+        "⚠️ Summarize open anomalies",
+        "🎯 Top savings opportunities"
+    ]
+    _sc = st.columns(len(_suggestions))
+    for _i, _sg in enumerate(_suggestions):
+        with _sc[_i]:
+            if st.button(_sg, key=f"sg_{_i}", use_container_width=True):
+                st.session_state["ai_prefill"] = _sg.split(" ", 1)[1]
+                st.experimental_rerun()
+
+    # Input with prefill from suggestion
+    _prefill = st.session_state.pop("ai_prefill", "")
+    st.markdown("""<div style="margin-top:8px;"></div>""", unsafe_allow_html=True)
+    user_q = st.text_input("Ask FinOps Guardian a question...", value=_prefill, label_visibility="collapsed", placeholder="💬 Ask anything about your Snowflake costs, anomalies, or savings...")
+    st.markdown("""<div style="display:flex;align-items:center;gap:6px;margin:-6px 0 20px 4px;">
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#10B981;"></span>
+        <span style="font-size:0.72rem;color:#6B7280;">AI is ready</span>
+        <span style="color:#D1D5DB;">·</span>
+        <span style="font-size:0.72rem;color:#9CA3AF;">Type a question and press Enter</span>
+    </div>""", unsafe_allow_html=True)
     if user_q:
         try:
             context_df = run_query_cached(session, f"""
@@ -850,12 +1101,22 @@ elif "Intelligence" in tab_choice:
                 f"Total credits saved so far: {context_df[context_df['STATUS']=='RESOLVED']['CREDITS_WASTED'].sum():.2f}\\n\\n"
                 f"Question: {user_q}"
             )
-            safe_prompt = prompt.replace("'", "\\'")
-            answer_df = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{safe_prompt}') AS RESPONSE")
+            safe_prompt = prompt.replace("'", "''")
+            with st.spinner("🧠 Thinking..."):
+                answer_df = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{safe_prompt}') AS RESPONSE")
             answer = answer_df["RESPONSE"].iloc[0]
-            st.markdown(f"""<div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:16px 20px;margin-top:12px;">
-                <div style="font-size:0.75rem;color:#667eea;font-weight:500;margin-bottom:8px;">🤖 AI Response</div>
-                <div style="color:#333;font-size:0.9rem;line-height:1.6;">{answer}</div>
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #E8ECF0;border-radius:14px;padding:20px 24px;margin-top:16px;
+                box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #F3F4F6;">
+                    <div style="width:28px;height:28px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+                        border-radius:8px;display:flex;align-items:center;justify-content:center;">
+                        <span style="font-size:0.85rem;">🤖</span>
+                    </div>
+                    <div style="font-size:0.8rem;font-weight:600;color:#667eea;">FinOps Guardian</div>
+                    <div style="font-size:0.7rem;color:#9CA3AF;margin-left:auto;">Cortex AI</div>
+                </div>
+                <div style="color:#1f2937;font-size:0.88rem;line-height:1.7;white-space:pre-wrap;">{_html.escape(answer)}</div>
             </div>""", unsafe_allow_html=True)
         except Exception as e:
             st.error(f"AI error: {e}")
@@ -868,14 +1129,18 @@ elif "Intelligence" in tab_choice:
         attribution = run_query_cached(session, """
             SELECT USER_NAME, ROLE_NAME, COUNT(*) AS QUERIES,
                    ROUND(SUM(CREDITS_USED_CLOUD_SERVICES), 4) AS CREDITS,
-                   ROUND(SUM(CREDITS_USED_CLOUD_SERVICES) * 3.00, 2) AS DOLLARS
+                   ROUND(SUM(CREDITS_USED_CLOUD_SERVICES) * {CREDIT_RATE}, 2) AS DOLLARS
             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
             WHERE START_TIME >= DATEADD('day', -7, CURRENT_TIMESTAMP())
               AND CREDITS_USED_CLOUD_SERVICES > 0
             GROUP BY USER_NAME, ROLE_NAME ORDER BY CREDITS DESC LIMIT 10
         """)
         if not attribution.empty:
-            st.bar_chart(attribution.set_index("USER_NAME")[["DOLLARS"]])
+            c = alt.Chart(attribution).mark_bar(color='#667eea').encode(
+                x=alt.X('USER_NAME:N', title='User'),
+                y=alt.Y('DOLLARS:Q', title='Dollars')
+            ).properties(height=250).configure_view(fill='#FFFFFF', stroke=None).configure(background='#FFFFFF').configure_axis(labelColor='#374151', titleColor='#374151', gridColor='#E5E7EB')
+            st.altair_chart(c, use_container_width=True)
             st.dataframe(attribution, use_container_width=True)
         else:
             st.info("No cost attribution data available.")
@@ -924,7 +1189,7 @@ elif "Compliance" in tab_choice:
 
     try:
         session.sql("SHOW WAREHOUSES").collect()
-        wh_data = run_query_cached(session, """
+        wh_data = run_query("""
             SELECT "name" AS WH, "size" AS SIZE, "auto_suspend" AS AUTO_SUSPEND,
                    "auto_resume" AS AUTO_RESUME, "type" AS TYPE
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
@@ -1039,7 +1304,6 @@ elif "Notifications" in tab_choice:
     """)
 
     unread_notifs = notifs[notifs["IS_READ"] == False] if not notifs.empty else notifs
-    read_notifs = notifs[notifs["IS_READ"] == True] if not notifs.empty else notifs
     total_unread = len(unread_notifs)
 
     # Header row: count + mark all read
@@ -1125,8 +1389,8 @@ elif "Notifications" in tab_choice:
                     {icon_svg}
                 </div>
                 <div style="flex:1;">
-                    <div style="font-weight:600;color:#1a1a2e;font-size:0.92rem;margin-bottom:3px;">{n['TITLE']}</div>
-                    <div style="color:#666;font-size:0.83rem;margin-bottom:4px;">{n['MESSAGE']}</div>
+                    <div style="font-weight:600;color:#1a1a2e;font-size:0.92rem;margin-bottom:3px;">{_html.escape(str(n['TITLE']))}</div>
+                    <div style="color:#666;font-size:0.83rem;margin-bottom:4px;">{_html.escape(str(n['MESSAGE']))}</div>
                     <div style="color:#999;font-size:0.75rem;">{time_ago} · {n['WAREHOUSE_NAME']}</div>
                 </div>
                 <div style="margin-left:16px;display:flex;align-items:center;gap:10px;">
