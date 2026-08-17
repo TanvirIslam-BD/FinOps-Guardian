@@ -422,6 +422,35 @@ def render_health_card(name, score, state="STARTED"):
     </div>"""
 
 
+# --- Email Approval Token Handler ---
+try:
+    _params = st.experimental_get_query_params()
+    _token = _params.get("token", [None])[0]
+    _action = _params.get("action", [None])[0]
+    if _token and _action:
+        _token_df = run_query(f"""
+            SELECT TOKEN_ID, ANOMALY_ID, ACTION, EXPIRES_AT, USED
+            FROM {DB}.{SCHEMA}.APPROVAL_TOKENS
+            WHERE TOKEN_ID = '{_token.replace(chr(39), "")}'
+        """)
+        if not _token_df.empty and not _token_df["USED"].iloc[0]:
+            _tok_anomaly = int(_token_df["ANOMALY_ID"].iloc[0])
+            _tok_action = _token_df["ACTION"].iloc[0]
+            if _action.upper() == _tok_action:
+                if _tok_action == "APPROVE":
+                    session.sql(f"CALL {DB}.{SCHEMA}.APPROVE_FIX({_tok_anomaly}, CURRENT_USER())").collect()
+                else:
+                    session.sql(f"UPDATE {DB}.{SCHEMA}.USAGE_ANOMALIES SET STATUS='DISMISSED' WHERE ANOMALY_ID={_tok_anomaly}").collect()
+                session.sql(f"UPDATE {DB}.{SCHEMA}.APPROVAL_TOKENS SET USED = TRUE WHERE TOKEN_ID = '{_token.replace(chr(39), '')}'").collect()
+                st.success(f"✅ Remediation **{_tok_action.lower()}d** successfully via email link! (Anomaly #{_tok_anomaly})")
+            else:
+                st.warning("Token action mismatch.")
+        elif not _token_df.empty and _token_df["USED"].iloc[0]:
+            st.info("This approval link has already been used.")
+        st.experimental_set_query_params()
+except Exception:
+    pass
+
 # --- Sidebar ---
 if "nav_index" not in st.session_state:
     st.session_state.nav_index = 0
@@ -522,16 +551,27 @@ with st.sidebar:
     st.caption("Shortcuts for common tasks")
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("📤 Run Detection", use_container_width=True):
+        if st.button("📤 Idle Scan", use_container_width=True):
             with st.spinner("Detecting..."):
                 session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
             st.experimental_rerun()
     with col_b:
-        if st.button("📋 Cost Spikes", use_container_width=True):
+        if st.button("📋 Spikes", use_container_width=True):
             with st.spinner("Scanning..."):
                 session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
             st.experimental_rerun()
-    if st.button("+ Apply Fixes", use_container_width=True, type="primary"):
+    col_c, col_d = st.columns(2)
+    with col_c:
+        if st.button("📐 Oversized", use_container_width=True):
+            with st.spinner("Analyzing..."):
+                session.sql(f"CALL {DB}.{SCHEMA}.DETECT_OVERSIZED_WAREHOUSE()").collect()
+            st.experimental_rerun()
+    with col_d:
+        if st.button("🐌 Long Queries", use_container_width=True):
+            with st.spinner("Scanning..."):
+                session.sql(f"CALL {DB}.{SCHEMA}.DETECT_LONG_RUNNING_QUERIES()").collect()
+            st.experimental_rerun()
+    if st.button("⚡ Apply Fixes", use_container_width=True, type="primary"):
         with st.spinner("Applying fixes..."):
             session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
         st.experimental_rerun()
@@ -544,8 +584,11 @@ with st.sidebar:
             session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.USAGE_ANOMALIES").collect()
             session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.AUDIT_LOG").collect()
             session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.NOTIFICATIONS").collect()
+            session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.AGENT_EXECUTION_LOG").collect()
+            session.sql(f"TRUNCATE TABLE {DB}.{SCHEMA}.APPROVAL_TOKENS").collect()
             session.sql(f"CALL {DB}.{SCHEMA}.DETECT_IDLE_COMPUTE_DEMO()").collect()
             session.sql(f"CALL {DB}.{SCHEMA}.DETECT_COST_SPIKE_DEMO(2.5)").collect()
+            session.sql(f"CALL {DB}.{SCHEMA}.DETECT_OVERSIZED_WAREHOUSE()").collect()
             session.sql(f"CALL {DB}.{SCHEMA}.APPLY_FIXES()").collect()
             st.success("Demo reset complete!")
             st.experimental_rerun()
@@ -869,6 +912,40 @@ elif "Operations" in tab_choice:
 
     st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
+    # --- Agent Execution Trace ---
+    st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🔍 Agent Execution Trace</div>""", unsafe_allow_html=True)
+    try:
+        exec_log = run_query(f"""
+            SELECT RUN_ID, SKILL_NAME, STEP_NUMBER, STEP_DESCRIPTION, RESULT_SUMMARY, STATUS, EXECUTED_AT
+            FROM {DB}.{SCHEMA}.AGENT_EXECUTION_LOG
+            ORDER BY EXECUTED_AT DESC LIMIT 20
+        """)
+        if not exec_log.empty:
+            runs = exec_log["RUN_ID"].unique()[:5]
+            for run_id in runs:
+                run_steps = exec_log[exec_log["RUN_ID"] == run_id].sort_values("STEP_NUMBER")
+                skill = run_steps["SKILL_NAME"].iloc[0]
+                ts = run_steps["EXECUTED_AT"].iloc[0]
+                skill_icons = {"cost-anomaly-detector": "🔍", "cost-spike-detector": "📈", "remediation-engine": "🔧", "warehouse-optimizer": "📐", "query-watchdog": "🐌"}
+                icon = skill_icons.get(skill, "⚙️")
+                with st.expander(f"{icon} {skill} — {ts}", expanded=False):
+                    for _, step in run_steps.iterrows():
+                        s_icon = "✅" if step["STATUS"] == "COMPLETED" else "🔄" if step["STATUS"] == "RUNNING" else "❌"
+                        result = f" → {step['RESULT_SUMMARY']}" if step["RESULT_SUMMARY"] else ""
+                        st.markdown(f"""<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #F3F4F6;">
+                            <span>{s_icon}</span>
+                            <div>
+                                <div style="font-size:0.82rem;color:#1a1a2e;font-weight:500;">Step {int(step['STEP_NUMBER'])}: {step['STEP_DESCRIPTION']}</div>
+                                <div style="font-size:0.75rem;color:#6B7280;">{result}</div>
+                            </div>
+                        </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown("""<div style="background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:10px;padding:16px;text-align:center;color:#9CA3AF;font-size:0.85rem;">No agent executions yet. Run a detection scan to see the trace.</div>""", unsafe_allow_html=True)
+    except Exception:
+        st.info("Execution trace unavailable.")
+
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+
     # Warehouse Status
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🖥️ Warehouse Status (Live)</div>""", unsafe_allow_html=True)
     try:
@@ -1089,17 +1166,60 @@ elif "Intelligence" in tab_choice:
     </div>""", unsafe_allow_html=True)
     if user_q:
         try:
+            # Gather rich context for AI reasoning
             context_df = run_query_cached(session, f"""
-                SELECT WAREHOUSE_NAME, ANOMALY_TYPE, SEVERITY, CREDITS_WASTED, STATUS
+                SELECT WAREHOUSE_NAME, ANOMALY_TYPE, SEVERITY, CREDITS_WASTED, STATUS, DESCRIPTION
                 FROM {DB}.{SCHEMA}.USAGE_ANOMALIES ORDER BY DETECTED_AT DESC LIMIT 15
             """)
+
+            # Top expensive queries by user/role
+            try:
+                top_queries = run_query_cached(session, f"""
+                    SELECT USER_NAME, ROLE_NAME, WAREHOUSE_NAME,
+                           ROUND(TOTAL_ELAPSED_TIME/1000,1) AS DURATION_SEC,
+                           ROUND(CREDITS_USED_CLOUD_SERVICES,4) AS CREDITS,
+                           QUERY_TYPE, LEFT(QUERY_TEXT, 150) AS QUERY_PREVIEW
+                    FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+                    WHERE START_TIME >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+                      AND CREDITS_USED_CLOUD_SERVICES > 0
+                    ORDER BY CREDITS_USED_CLOUD_SERVICES DESC LIMIT 8
+                """)
+                query_ctx = f"\\nTop costly queries (7 days):\\n{top_queries.to_string(index=False)}\\n"
+            except Exception:
+                query_ctx = ""
+
+            # Daily warehouse spend trend
+            try:
+                daily_spend = run_query_cached(session, """
+                    SELECT WAREHOUSE_NAME,
+                           TO_CHAR(DATE_TRUNC('day', START_TIME), 'YYYY-MM-DD') AS DAY,
+                           ROUND(SUM(CREDITS_USED),2) AS CREDITS
+                    FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+                    WHERE START_TIME >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+                    GROUP BY 1,2 ORDER BY 1,2
+                """)
+                spend_ctx = f"\\nDaily warehouse spend (7 days):\\n{daily_spend.to_string(index=False)}\\n"
+            except Exception:
+                spend_ctx = ""
+
+            # Active smart alerts
+            try:
+                alerts_ctx_df = run_query(f"SELECT NATURAL_LANGUAGE_RULE, PARSED_METRIC, PARSED_THRESHOLD, TRIGGER_COUNT FROM {DB}.{SCHEMA}.SMART_ALERTS WHERE IS_ACTIVE = TRUE")
+                alerts_ctx = f"\\nActive monitoring alerts:\\n{alerts_ctx_df.to_string(index=False)}\\n" if not alerts_ctx_df.empty else ""
+            except Exception:
+                alerts_ctx = ""
+
             prompt = (
-                "You are FinOps Guardian, an AI assistant for Snowflake cost optimization. "
-                "Answer concisely with specific numbers and actionable recommendations.\\n\\n"
-                f"Current anomaly data:\\n{context_df.to_string(index=False)}\\n\\n"
-                f"Credit rate: ${CREDIT_RATE}/credit. "
+                "You are FinOps Guardian, an expert AI assistant for Snowflake cost optimization. "
+                "Provide detailed, natural language explanations with specific numbers, root causes, "
+                "and actionable recommendations. When explaining cost increases, identify which users, "
+                "roles, queries, or patterns caused them.\\n\\n"
+                f"Current anomalies:\\n{context_df.to_string(index=False)}\\n"
+                f"{query_ctx}{spend_ctx}{alerts_ctx}"
+                f"\\nCredit rate: ${CREDIT_RATE}/credit. "
                 f"Total credits saved so far: {context_df[context_df['STATUS']=='RESOLVED']['CREDITS_WASTED'].sum():.2f}\\n\\n"
-                f"Question: {user_q}"
+                f"User question: {user_q}\\n\\n"
+                "Respond with a clear explanation, root cause analysis where applicable, and specific next steps."
             )
             safe_prompt = prompt.replace("'", "''")
             with st.spinner("🧠 Thinking..."):
