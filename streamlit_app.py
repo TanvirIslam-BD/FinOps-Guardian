@@ -427,11 +427,12 @@ try:
     _params = st.experimental_get_query_params()
     _token = _params.get("token", [None])[0]
     _action = _params.get("action", [None])[0]
-    if _token and _action:
+    if _token and _action and len(_token) == 36:  # UUID validation
+        _safe_token = _token.replace("'", "")
         _token_df = run_query(f"""
             SELECT TOKEN_ID, ANOMALY_ID, ACTION, EXPIRES_AT, USED
             FROM {DB}.{SCHEMA}.APPROVAL_TOKENS
-            WHERE TOKEN_ID = '{_token.replace(chr(39), "")}'
+            WHERE TOKEN_ID = '{_safe_token}' AND EXPIRES_AT > CURRENT_TIMESTAMP()
         """)
         if not _token_df.empty and not _token_df["USED"].iloc[0]:
             _tok_anomaly = int(_token_df["ANOMALY_ID"].iloc[0])
@@ -441,13 +442,18 @@ try:
                     session.sql(f"CALL {DB}.{SCHEMA}.APPROVE_FIX({_tok_anomaly}, CURRENT_USER())").collect()
                 else:
                     session.sql(f"UPDATE {DB}.{SCHEMA}.USAGE_ANOMALIES SET STATUS='DISMISSED' WHERE ANOMALY_ID={_tok_anomaly}").collect()
-                session.sql(f"UPDATE {DB}.{SCHEMA}.APPROVAL_TOKENS SET USED = TRUE WHERE TOKEN_ID = '{_token.replace(chr(39), '')}'").collect()
-                st.success(f"✅ Remediation **{_tok_action.lower()}d** successfully via email link! (Anomaly #{_tok_anomaly})")
+                session.sql(f"UPDATE {DB}.{SCHEMA}.APPROVAL_TOKENS SET USED = TRUE WHERE TOKEN_ID = '{_safe_token}'").collect()
+                st.success(f"Remediation **{_tok_action.lower()}d** successfully via email link! (Anomaly #{_tok_anomaly})")
             else:
                 st.warning("Token action mismatch.")
         elif not _token_df.empty and _token_df["USED"].iloc[0]:
             st.info("This approval link has already been used.")
-        st.experimental_set_query_params()
+        elif _token_df.empty:
+            st.warning("Invalid or expired approval token.")
+        try:
+            st.experimental_set_query_params()
+        except Exception:
+            pass
 except Exception:
     pass
 
@@ -931,11 +937,11 @@ elif "Operations" in tab_choice:
                 with st.expander(f"{icon} {skill} — {ts}", expanded=False):
                     for _, step in run_steps.iterrows():
                         s_icon = "✅" if step["STATUS"] == "COMPLETED" else "🔄" if step["STATUS"] == "RUNNING" else "❌"
-                        result = f" → {step['RESULT_SUMMARY']}" if step["RESULT_SUMMARY"] else ""
+                        result = f" → {_html.escape(str(step['RESULT_SUMMARY']))}" if step["RESULT_SUMMARY"] else ""
                         st.markdown(f"""<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #F3F4F6;">
                             <span>{s_icon}</span>
                             <div>
-                                <div style="font-size:0.82rem;color:#1a1a2e;font-weight:500;">Step {int(step['STEP_NUMBER'])}: {step['STEP_DESCRIPTION']}</div>
+                                <div style="font-size:0.82rem;color:#1a1a2e;font-weight:500;">Step {int(step['STEP_NUMBER'])}: {_html.escape(str(step['STEP_DESCRIPTION']))}</div>
                                 <div style="font-size:0.75rem;color:#6B7280;">{result}</div>
                             </div>
                         </div>""", unsafe_allow_html=True)
@@ -1190,7 +1196,7 @@ elif "Intelligence" in tab_choice:
 
             # Daily warehouse spend trend
             try:
-                daily_spend = run_query_cached(session, """
+                daily_spend = run_query_cached(session, f"""
                     SELECT WAREHOUSE_NAME,
                            TO_CHAR(DATE_TRUNC('day', START_TIME), 'YYYY-MM-DD') AS DAY,
                            ROUND(SUM(CREDITS_USED),2) AS CREDITS
@@ -1246,7 +1252,7 @@ elif "Intelligence" in tab_choice:
     # Cost Attribution
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">👥 Cost Attribution (Top Users - 7 Days)</div>""", unsafe_allow_html=True)
     try:
-        attribution = run_query_cached(session, """
+        attribution = run_query_cached(session, f"""
             SELECT USER_NAME, ROLE_NAME, COUNT(*) AS QUERIES,
                    ROUND(SUM(CREDITS_USED_CLOUD_SERVICES), 4) AS CREDITS,
                    ROUND(SUM(CREDITS_USED_CLOUD_SERVICES) * {CREDIT_RATE}, 2) AS DOLLARS
