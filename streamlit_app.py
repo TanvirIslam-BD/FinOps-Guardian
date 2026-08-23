@@ -371,6 +371,9 @@ def run_query_cached(_session, sql):
 
 # --- Helper Functions for Reference UI Components ---
 
+def render_empty_state(message):
+    return f'<div style="background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:12px;padding:20px;text-align:center;color:#9CA3AF;font-size:0.85rem;">{message}</div>'
+
 def render_kpi_card(icon_emoji, icon_bg, label, value, delta_text="", delta_positive=True):
     """Render a KPI card matching the reference design."""
     delta_color = "#16A34A" if delta_positive else "#DC2626"
@@ -470,7 +473,7 @@ with st.sidebar:
         </div>
         <div>
             <div style="font-size:0.95rem;font-weight:700;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.2;">FinOps Guardian</div>
-            <div style="font-size:0.6rem;color:#999;letter-spacing:0.3px;">Expense Intelligence ✨</div>
+            <div style="font-size:0.6rem;color:#999;letter-spacing:0.3px;">AI-Powered Cost Intelligence</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -609,7 +612,7 @@ with st.sidebar:
 
 
 # --- Page Header ---
-def render_page_header(title, emoji):
+def render_page_header(title, emoji, subtitle="Monitor your app health, usage and key metrics at a glance"):
     _content_spinner.empty()
     today = datetime.now()
     week_start = today - timedelta(days=today.weekday())
@@ -620,7 +623,7 @@ def render_page_header(title, emoji):
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #E8ECF0;">
         <div>
             <h1 style="margin:0;font-size:1.6rem;color:#1a1a2e;">{emoji} {title}</h1>
-            <p style="margin:4px 0 0 0;color:#888;font-size:0.82rem;">Monitor your app health, usage and key metrics at a glance</p>
+            <p style="margin:4px 0 0 0;color:#888;font-size:0.82rem;">{subtitle}</p>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
             <span style="background:#F3F4F6;padding:8px 16px;border-radius:8px;font-size:0.82rem;color:#555;border:1px solid #E5E7EB;cursor:pointer;">📅 {date_range} ▾</span>
@@ -702,9 +705,9 @@ if "Executive Summary" in tab_choice:
                 ).properties(height=300).configure_view(fill='#FFFFFF', stroke=None).configure(background='#FFFFFF').configure_axis(labelColor='#374151', titleColor='#374151', gridColor='#E5E7EB')
                 st.altair_chart(c, use_container_width=True)
             else:
-                st.info("No savings history yet. Run detection + apply fixes to populate.")
+                st.markdown(render_empty_state("No savings history yet. Run detection + apply fixes to populate."), unsafe_allow_html=True)
         except Exception:
-            st.info("No savings history yet. Run detection + apply fixes to populate.")
+            st.markdown(render_empty_state("No savings history yet. Run detection + apply fixes to populate."), unsafe_allow_html=True)
 
     with ch2:
         st.markdown("""<div style="background:#fff;border:1px solid #E8ECF0;border-radius:12px;padding:20px;">
@@ -801,7 +804,7 @@ if "Executive Summary" in tab_choice:
 # TAB 2: OPERATIONS
 # ============================================================
 elif "Operations" in tab_choice:
-    render_page_header("Operations Center", "⚙️")
+    render_page_header("Operations Center", "⚙️", "Manage alerts, view agent traces, and monitor warehouse status")
 
     # --- Smart Alerts: Natural Language (Top of Operations) ---
     st.markdown("""
@@ -947,9 +950,9 @@ elif "Operations" in tab_choice:
                             </div>
                         </div>""", unsafe_allow_html=True)
         else:
-            st.markdown("""<div style="background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:10px;padding:16px;text-align:center;color:#9CA3AF;font-size:0.85rem;">No agent executions yet. Run a detection scan to see the trace.</div>""", unsafe_allow_html=True)
+            st.markdown(render_empty_state("No agent executions yet. Run a detection scan to see the trace."), unsafe_allow_html=True)
     except Exception:
-        st.info("Execution trace unavailable.")
+        st.markdown(render_empty_state("Execution trace unavailable."), unsafe_allow_html=True)
 
     st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
@@ -981,7 +984,7 @@ elif "Operations" in tab_choice:
     except Exception:
         pass
 
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
     # Auto-applied fixes
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🤖 Recently Auto-Applied Fixes</div>""", unsafe_allow_html=True)
@@ -999,7 +1002,7 @@ elif "Operations" in tab_choice:
                 st.markdown(f"**Type:** {fix['ANOMALY_TYPE']} | **When:** {fix['LOGGED_AT']}")
                 st.code(fix["SQL_EXECUTED"], language="sql")
     else:
-        st.info("No auto-applied fixes yet. Run detection + Apply Fixes to see results.")
+        st.markdown(render_empty_state("No auto-applied fixes yet. Run detection + Apply Fixes to see results."), unsafe_allow_html=True)
 
     st.markdown("""
     <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
@@ -1011,7 +1014,7 @@ elif "Operations" in tab_choice:
 # TAB: APPROVALS
 # ============================================================
 elif "Approvals" in tab_choice:
-    render_page_header("Approvals", "✅")
+    render_page_header("Approvals", "✅", "Review and approve pending remediation actions")
 
     # Pending approvals count
     pending = run_query_cached(session, f"""
@@ -1036,7 +1039,7 @@ elif "Approvals" in tab_choice:
     with k3:
         st.markdown(render_kpi_card("🚨", "rgba(220,38,38,0.1)", "High Severity", str(high_count), "", high_count == 0), unsafe_allow_html=True)
 
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
     if not pending.empty:
         st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">🔐 Pending Approvals</div>""", unsafe_allow_html=True)
@@ -1072,7 +1075,7 @@ elif "Approvals" in tab_choice:
         st.markdown("""<div style="background:rgba(22,163,74,0.06);border:1px solid rgba(22,163,74,0.2);border-radius:10px;padding:14px 18px;color:#16A34A;font-size:0.9rem;">✅ No pending approvals — all clear!</div>""", unsafe_allow_html=True)
 
     # Recently approved
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">✔️ Recently Approved</div>""", unsafe_allow_html=True)
     recent_approved = run_query_cached(session, f"""
         SELECT l.LOGGED_AT, l.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
@@ -1096,7 +1099,7 @@ elif "Approvals" in tab_choice:
                 <span style="color:#16A34A;font-weight:600;font-size:0.88rem;">${ra['DOLLAR_SAVED']} saved</span>
             </div>""", unsafe_allow_html=True)
     else:
-        st.info("No recently approved actions.")
+        st.markdown(render_empty_state("No recently approved actions."), unsafe_allow_html=True)
 
     st.markdown("""
     <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
@@ -1108,7 +1111,7 @@ elif "Approvals" in tab_choice:
 # TAB 3: INTELLIGENCE
 # ============================================================
 elif "Intelligence" in tab_choice:
-    render_page_header("AI Intelligence", "🧠")
+    render_page_header("AI Intelligence", "🧠", "AI-powered cost insights and root cause analysis")
 
     # AI Chat - Modern Card UI
     st.markdown("""
@@ -1251,7 +1254,7 @@ elif "Intelligence" in tab_choice:
         except Exception as e:
             st.error(f"AI error: {e}")
 
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
     # Cost Attribution
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">👥 Cost Attribution (Top Users - 7 Days)</div>""", unsafe_allow_html=True)
@@ -1273,11 +1276,11 @@ elif "Intelligence" in tab_choice:
             st.altair_chart(c, use_container_width=True)
             st.dataframe(attribution, use_container_width=True)
         else:
-            st.info("No cost attribution data available.")
+            st.markdown(render_empty_state("No cost attribution data available."), unsafe_allow_html=True)
     except Exception:
-        st.info("Requires ACCOUNT_USAGE access.")
+        st.markdown(render_empty_state("Requires ACCOUNT_USAGE access for cost attribution."), unsafe_allow_html=True)
 
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
     # Week-over-Week
     st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">📈 Week-over-Week Comparison</div>""", unsafe_allow_html=True)
@@ -1301,9 +1304,9 @@ elif "Intelligence" in tab_choice:
                 with wcols[i % min(len(wow), 4)]:
                     st.metric(row["WAREHOUSE_NAME"], f"{tw:.2f}", delta)
         else:
-            st.info("Not enough data for comparison.")
+            st.markdown(render_empty_state("Not enough data for week-over-week comparison."), unsafe_allow_html=True)
     except Exception:
-        st.info("Requires ACCOUNT_USAGE access.")
+        st.markdown(render_empty_state("Requires ACCOUNT_USAGE access for weekly comparison."), unsafe_allow_html=True)
 
     st.markdown("""
     <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
@@ -1315,7 +1318,7 @@ elif "Intelligence" in tab_choice:
 # TAB 4: COMPLIANCE
 # ============================================================
 elif "Compliance" in tab_choice:
-    render_page_header("Policy Compliance", "📋")
+    render_page_header("Policy Compliance", "📋", "Warehouse policy checks and best practice enforcement")
 
     try:
         session.sql("SHOW WAREHOUSES").collect()
@@ -1383,7 +1386,7 @@ elif "Compliance" in tab_choice:
             with sc3:
                 st.markdown(render_kpi_card("🔍", "rgba(59,130,246,0.1)", "Issues Found", str(len(findings)), "", len(findings) == 0), unsafe_allow_html=True)
 
-            st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
             if findings:
                 st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">Policy Violations</div>""", unsafe_allow_html=True)
@@ -1399,7 +1402,7 @@ elif "Compliance" in tab_choice:
             else:
                 st.markdown("""<div style="background:rgba(22,163,74,0.06);border:1px solid rgba(22,163,74,0.2);border-radius:10px;padding:14px 18px;color:#16A34A;font-size:0.9rem;">✅ All warehouses comply with best practices!</div>""", unsafe_allow_html=True)
 
-            st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
             st.markdown("""<div style="font-size:1.05rem;font-weight:600;color:#1a1a2e;margin-bottom:12px;">Best Practice Reference</div>""", unsafe_allow_html=True)
             st.markdown("""
 | Policy | Recommended | Why |
@@ -1423,7 +1426,7 @@ elif "Compliance" in tab_choice:
 # TAB 5: NOTIFICATIONS
 # ============================================================
 elif "Notifications" in tab_choice:
-    render_page_header("Notifications", "🔔")
+    render_page_header("Notifications", "🔔", "Stay updated on system events and alerts")
 
     notifs = run_query_cached(session, f"""
         SELECT NOTIFICATION_ID, CREATED_AT, NOTIFICATION_TYPE, TITLE, MESSAGE,
@@ -1463,7 +1466,7 @@ elif "Notifications" in tab_choice:
     """, unsafe_allow_html=True)
 
     if notifs.empty:
-        st.info("No notifications yet. Run detection scans and apply fixes to generate notifications.")
+        st.markdown(render_empty_state("No notifications yet. Run detection scans and apply fixes to generate notifications."), unsafe_allow_html=True)
     else:
         # Render notification cards matching reference design
         from datetime import datetime as dt
@@ -1539,7 +1542,7 @@ elif "Notifications" in tab_choice:
 # TAB 6: AUDIT TRAIL
 # ============================================================
 elif "Audit Trail" in tab_choice:
-    render_page_header("Audit Trail", "📜")
+    render_page_header("Audit Trail", "📜", "Complete history of all automated and manual actions")
 
     # Summary KPIs
     audit_stats = run_query_cached(session, f"""
@@ -1623,7 +1626,7 @@ elif "Audit Trail" in tab_choice:
                     if entry["SQL_EXECUTED"]:
                         st.code(entry["SQL_EXECUTED"], language="sql")
     else:
-        st.info("No audit entries match your filters.")
+        st.markdown(render_empty_state("No audit entries match your filters."), unsafe_allow_html=True)
 
     st.markdown("""
     <div style="text-align:center;margin-top:32px;padding:12px;color:#aaa;font-size:0.75rem;">
