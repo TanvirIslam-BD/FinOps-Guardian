@@ -10,9 +10,13 @@ st.set_page_config(
     layout="wide",
 )
 
-# --- Branded Loading Screen ---
+# --- Branded Loading Screen (only on first load) ---
 _loading_placeholder = st.empty()
-_loading_placeholder.markdown("""
+_show_loader = "app_loaded" not in st.session_state or st.session_state.get("_nav_switching", False)
+if _show_loader:
+    st.session_state["app_loaded"] = True
+    st.session_state["_nav_switching"] = False
+    _loading_placeholder.markdown("""
 <div id="finops-loader" style="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:99999;
     background:linear-gradient(135deg, #0f0c29 0%, #1a1a3e 50%, #24243e 100%);
     display:flex;flex-direction:column;align-items:center;justify-content:center;">
@@ -227,6 +231,13 @@ section[data-testid="stSidebar"] > div > div > div,
     font-size: 0.9rem !important;
     box-shadow: 0 1px 4px rgba(0,0,0,0.04) !important;
     transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+    resize: none !important;
+}
+textarea, .stTextInput textarea, .stTextArea textarea,
+input, .stTextInput input {
+    resize: none !important;
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
 }
 [data-testid="stTextInput"] > div > div > input:focus,
 [data-testid="stTextInput"] input:focus,
@@ -537,6 +548,7 @@ with st.sidebar:
     current_idx = nav_options.index(tab_choice) if tab_choice in nav_options else 0
     if current_idx != st.session_state.nav_index:
         st.session_state.nav_index = current_idx
+        st.session_state["_nav_switching"] = True
         st.experimental_rerun()
 
     # Inject dynamic CSS to highlight the active nav item by nth-child
@@ -824,7 +836,21 @@ elif "Operations" in tab_choice:
     </div>
     """, unsafe_allow_html=True)
 
-    alert_input = st.text_input("Describe your alert rule...", placeholder="e.g. Notify me if any warehouse spends more than $50 per day", key="alert_nl", label_visibility="collapsed")
+    _alert_suggestions = [
+        "🔔 Alert if any warehouse spends > $50/day",
+        "⏱️ Notify when idle compute exceeds 2 hours",
+        "📈 Warn if credits spike 3x above baseline",
+        "🐌 Flag queries running longer than 10 minutes"
+    ]
+    _asc = st.columns(len(_alert_suggestions))
+    for _ai, _asg in enumerate(_alert_suggestions):
+        with _asc[_ai]:
+            if st.button(_asg, key=f"asg_{_ai}", use_container_width=True):
+                st.session_state["alert_nl_prefill"] = _asg.split(" ", 1)[1]
+                st.experimental_rerun()
+
+    _alert_prefill = st.session_state.pop("alert_nl_prefill", "")
+    alert_input = st.text_input("Describe your alert rule...", value=_alert_prefill, placeholder="e.g. Notify me if any warehouse spends more than $50 per day", key="alert_nl", label_visibility="collapsed")
 
     if alert_input:
         alert_input = alert_input[:500]
@@ -840,7 +866,7 @@ elif "Operations" in tab_choice:
             )
             safe_parse = parse_prompt.replace("'", "''")
             with st.spinner("🧠 Parsing alert rule..."):
-                parse_result = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{safe_parse}') AS RESPONSE")
+                parse_result = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', '{safe_parse}') AS RESPONSE")
             raw_response = parse_result["RESPONSE"].iloc[0]
 
             json_start = raw_response.find("{")
@@ -1236,7 +1262,7 @@ elif "Intelligence" in tab_choice:
             )
             safe_prompt = prompt.replace("'", "''")
             with st.spinner("🧠 Thinking..."):
-                answer_df = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{safe_prompt}') AS RESPONSE")
+                answer_df = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', '{safe_prompt}') AS RESPONSE")
             answer = answer_df["RESPONSE"].iloc[0]
             st.markdown(f"""
             <div style="background:#FFFFFF;border:1px solid #E8ECF0;border-radius:14px;padding:20px 24px;margin-top:16px;
