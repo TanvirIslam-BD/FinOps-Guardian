@@ -4,6 +4,53 @@ import html as _html
 from snowflake.snowpark.context import get_active_session
 from datetime import datetime, timedelta
 
+
+# --- Streamlit version shims -------------------------------------------------
+# Streamlit-in-Snowflake does not pin a version for this app, so the runtime can
+# move under us. st.experimental_rerun was removed in 1.37 and st.rerun did not
+# exist before 1.27; the query-param API was renamed over the same period.
+# Resolve whichever the running build actually exposes.
+
+def _rerun():
+    fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+    if fn is None:
+        st.error("This Streamlit build exposes neither st.rerun nor st.experimental_rerun.")
+        st.stop()
+    fn()
+
+
+def _get_query_params():
+    """Return {name: [values]} regardless of which API this build ships."""
+    qp = getattr(st, "query_params", None)
+    if qp is not None:
+        try:
+            return {k: (v if isinstance(v, list) else [v]) for k, v in qp.to_dict().items()}
+        except Exception:
+            pass
+    legacy = getattr(st, "experimental_get_query_params", None)
+    if legacy is not None:
+        try:
+            return legacy()
+        except Exception:
+            pass
+    return {}
+
+
+def _clear_query_params():
+    qp = getattr(st, "query_params", None)
+    if qp is not None:
+        try:
+            qp.clear()
+            return
+        except Exception:
+            pass
+    legacy = getattr(st, "experimental_set_query_params", None)
+    if legacy is not None:
+        try:
+            legacy()
+        except Exception:
+            pass
+
 st.set_page_config(
     page_title="FinOps Guardian",
     page_icon="🛡️",
@@ -612,7 +659,7 @@ def run_skill(proc, *args, label="Running skill"):
 # All validation — format, expiry, single use, action match — happens server
 # side, so nothing from the URL is ever concatenated into SQL.
 try:
-    _params = st.experimental_get_query_params()
+    _params = _get_query_params()
     _token = (_params.get("token") or [None])[0]
     _action = (_params.get("action") or [None])[0]
     if _token and _action:
@@ -634,10 +681,7 @@ try:
             st.warning("That approval link has expired. Open the Approvals tab to action it here.")
         else:
             st.warning("That approval link is not valid. Open the Approvals tab to action it here.")
-        try:
-            st.experimental_set_query_params()
-        except Exception:
-            pass
+        _clear_query_params()
 except Exception as _tok_err:
     st.warning(f"Could not process the approval link: {_tok_err}")
 
@@ -697,7 +741,7 @@ with st.sidebar:
     if unread > 0:
         if st.button(f"View {unread} Notifications →", use_container_width=True, key="notif_badge"):
             st.session_state.nav_index = 5
-            st.experimental_rerun()
+            _rerun()
 
     # Navigation
     st.markdown("""<div style="font-size:0.62rem;color:#999;text-transform:uppercase;letter-spacing:1.2px;margin:10px 0 4px 0;font-weight:600;">Navigation</div>""", unsafe_allow_html=True)
@@ -719,7 +763,7 @@ with st.sidebar:
     if current_idx != st.session_state.nav_index:
         st.session_state.nav_index = current_idx
         st.session_state["_nav_switching"] = True
-        st.experimental_rerun()
+        _rerun()
 
     # Inject dynamic CSS to highlight the active nav item by nth-child
     active_nth = st.session_state.nav_index + 1
@@ -747,27 +791,27 @@ with st.sidebar:
         if st.button("📤 Idle Scan", use_container_width=True):
             run_skill("DETECT_IDLE_COMPUTE_DEMO", label="cost-anomaly-detector")
             st.session_state.nav_index = 1
-            st.experimental_rerun()
+            _rerun()
     with col_b:
         if st.button("📋 Spikes", use_container_width=True):
             run_skill("DETECT_COST_SPIKE_DEMO", 2.5, label="cost-spike-detector")
             st.session_state.nav_index = 1
-            st.experimental_rerun()
+            _rerun()
     col_c, col_d = st.columns(2)
     with col_c:
         if st.button("📐 Oversized", use_container_width=True):
             run_skill("DETECT_OVERSIZED_WAREHOUSE", 0.40, label="warehouse-optimizer")
             st.session_state.nav_index = 1
-            st.experimental_rerun()
+            _rerun()
     with col_d:
         if st.button("🐌 Long Queries", use_container_width=True):
             run_skill("DETECT_LONG_RUNNING_QUERIES", 600, label="query-watchdog")
             st.session_state.nav_index = 1
-            st.experimental_rerun()
+            _rerun()
     if st.button("⚡ Apply Fixes", use_container_width=True, type="primary"):
         run_skill("APPLY_FIXES", label="remediation-engine")
         st.session_state.nav_index = 1
-        st.experimental_rerun()
+        _rerun()
 
     st.selectbox("Scan Profile", ["Default", "Cost Optimization", "Idle Detection", "Full Audit"], label_visibility="visible", key="scan_profile")
 
@@ -792,7 +836,7 @@ with st.sidebar:
                     except Exception as _e:
                         st.warning(f"{_proc} failed: {_e}")
             st.success("Demo reset complete — all four detection skills re-ran.")
-            st.experimental_rerun()
+            _rerun()
 
     # Footer
     st.markdown("""
@@ -1052,7 +1096,7 @@ elif "Operations" in tab_choice:
         with _asc[_ai]:
             if st.button(_asg, key=f"asg_{_ai}", use_container_width=True):
                 st.session_state["alert_nl_prefill"] = _asg.split(" ", 1)[1]
-                st.experimental_rerun()
+                _rerun()
 
     # Activation is handled before the text box is built, so clearing the field
     # is just a new widget key rather than mutating an instantiated widget.
@@ -1074,7 +1118,7 @@ elif "Operations" in tab_choice:
             st.session_state.pop("_parsed_alert", None)
             st.session_state["alert_form_v"] = st.session_state.get("alert_form_v", 0) + 1
             st.session_state["_alert_activated_msg"] = "Alert activated — it will be evaluated on the next monitoring run."
-            st.experimental_rerun()
+            _rerun()
         except Exception as e:
             st.error(f"Could not activate alert: {e}")
 
@@ -1160,7 +1204,7 @@ elif "Operations" in tab_choice:
                     "warehouse": warehouse,
                     "condition": condition,
                 }
-                st.experimental_rerun()
+                _rerun()
 
     # Show active alerts
     try:
@@ -1196,7 +1240,7 @@ elif "Operations" in tab_choice:
 
             if st.button(f"🗑 Delete", key=f"del_alert_{a_id}"):
                 run_write(f"UPDATE {DB}.{SCHEMA}.SMART_ALERTS SET IS_ACTIVE = FALSE WHERE ALERT_ID = ?", params=[a_id])
-                st.experimental_rerun()
+                _rerun()
     elif active_alerts is None or active_alerts.empty:
         st.markdown("""<div style="background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:12px;padding:20px;text-align:center;color:#9CA3AF;font-size:0.85rem;">No active alerts yet. Describe a rule above to get started!</div>""", unsafe_allow_html=True)
 
@@ -1233,7 +1277,7 @@ elif "Operations" in tab_choice:
     with _tc1:
         if st.button("🔄 Refresh trace", use_container_width=True, key="refresh_trace"):
             st.cache_data.clear()
-            st.experimental_rerun()
+            _rerun()
     with _tc2:
         if _in_flight:
             st.caption(f"{_in_flight} step(s) still executing — refresh to follow along.")
@@ -1501,14 +1545,14 @@ elif "Approvals" in tab_choice:
                     try:
                         msg = call_proc("APPROVE_FIX", aid, CURRENT_USER_NAME, "UI", chosen or "")
                         st.success(str(msg))
-                        st.experimental_rerun()
+                        _rerun()
                     except Exception as e:
                         st.error(f"Approval failed: {e}")
             with b2:
                 if st.button("✗ Reject", key=f"dm_{aid}", use_container_width=True):
                     try:
                         call_proc("REJECT_FIX", aid, CURRENT_USER_NAME, "UI")
-                        st.experimental_rerun()
+                        _rerun()
                     except Exception as e:
                         st.error(f"Rejection failed: {e}")
             with b3:
@@ -1518,7 +1562,7 @@ elif "Approvals" in tab_choice:
                         st.cache_data.clear()
                     except Exception as e:
                         st.session_state[f"email_result_{aid}"] = f'{{"status": "FAILED: {e}"}}'
-                    st.experimental_rerun()
+                    _rerun()
 
             # Show the generated links. They work from the reviewer's inbox and
             # also here, which is what makes this demonstrable without a mailbox.
@@ -1650,7 +1694,7 @@ elif "Intelligence" in tab_choice:
         with _sc[_i]:
             if st.button(_sg, key=f"sg_{_i}", use_container_width=True):
                 st.session_state["finops_ai_prefill"] = _sg.split(" ", 1)[1]
-                st.experimental_rerun()
+                _rerun()
 
     # Input with prefill from suggestion
     _prefill = st.session_state.pop("finops_ai_prefill", "")
@@ -2105,7 +2149,7 @@ elif "Notifications" in tab_choice:
     with n2:
         if st.button("✓ Mark all read", use_container_width=True):
             run_write(f"UPDATE {DB}.{SCHEMA}.NOTIFICATIONS SET IS_READ = TRUE WHERE IS_READ = FALSE")
-            st.experimental_rerun()
+            _rerun()
 
     # Filter tabs
     alert_count = len(notifs[notifs["NOTIFICATION_TYPE"] == "APPROVAL_NEEDED"]) if not notifs.empty else 0
