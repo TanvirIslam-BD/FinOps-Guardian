@@ -39,6 +39,25 @@ USING (
 ) s ON t.CONFIG_KEY = s.K
 WHEN NOT MATCHED THEN INSERT (CONFIG_KEY, CONFIG_VALUE, DESCRIPTION) VALUES (s.K, s.V, s.D);
 
+-- ----------------------------------------------------------------------------
+-- 1b. Legacy migration
+--     Two tables shipped earlier with an incompatible shape:
+--       SAVINGS_HISTORY     was (SAVING_ID, SAVED_AT, WAREHOUSE_NAME, CREDITS_SAVED,
+--                           ACTION_TYPE) - the dashboard reads SNAPSHOT_DATE and
+--                           DOLLAR_SAVED, so the trend chart never rendered.
+--       AGENT_EXECUTION_LOG was keyed EXECUTION_ID with no timing columns.
+--     Both hold regenerable telemetry, so they are rebuilt rather than patched.
+--     Every other table is migrated in place in section 5b.
+-- ----------------------------------------------------------------------------
+DROP TABLE IF EXISTS SAVINGS_HISTORY;
+DROP TABLE IF EXISTS AGENT_EXECUTION_LOG;
+
+-- These two shipped with no arguments and now take a tunable threshold.
+-- CREATE OR REPLACE would add an overload rather than replace, and Snowflake
+-- rejects that as ambiguous because the new argument has a default.
+DROP PROCEDURE IF EXISTS DETECT_OVERSIZED_WAREHOUSE();
+DROP PROCEDURE IF EXISTS DETECT_LONG_RUNNING_QUERIES();
+
 -- ============================================================================
 -- 2. CORE TABLES
 -- ============================================================================
@@ -247,6 +266,50 @@ CREATE TABLE IF NOT EXISTS APPROVAL_TOKENS (
     SENT_TO    VARCHAR(256)
 );
 
+-- ----------------------------------------------------------------------------
+-- 5b. Bring pre-existing tables up to the current shape.
+--     No-ops on a fresh install; on an upgrade they add the columns this
+--     release introduced without touching the rows already there.
+-- ----------------------------------------------------------------------------
+ALTER TABLE USAGE_ANOMALIES ADD COLUMN IF NOT EXISTS RECOMMENDED_ACTION VARCHAR(50);
+ALTER TABLE USAGE_ANOMALIES ADD COLUMN IF NOT EXISTS ACTION_PARAM       VARCHAR(256);
+ALTER TABLE USAGE_ANOMALIES ADD COLUMN IF NOT EXISTS QUERY_ID           VARCHAR(64);
+ALTER TABLE USAGE_ANOMALIES ADD COLUMN IF NOT EXISTS DETECTED_BY_SKILL  VARCHAR(64);
+
+ALTER TABLE AUDIT_LOG       ADD COLUMN IF NOT EXISTS APPROVAL_CHANNEL   VARCHAR(20);
+
+ALTER TABLE NOTIFICATIONS   ADD COLUMN IF NOT EXISTS ANOMALY_ID         NUMBER;
+
+ALTER TABLE SMART_ALERTS    ADD COLUMN IF NOT EXISTS LAST_TRIGGERED_AT  TIMESTAMP_LTZ;
+ALTER TABLE SMART_ALERTS    ADD COLUMN IF NOT EXISTS CREATED_BY         VARCHAR(256);
+
+ALTER TABLE APPROVAL_TOKENS ADD COLUMN IF NOT EXISTS USED_AT            TIMESTAMP_LTZ;
+ALTER TABLE APPROVAL_TOKENS ADD COLUMN IF NOT EXISTS USED_BY            VARCHAR(256);
+ALTER TABLE APPROVAL_TOKENS ADD COLUMN IF NOT EXISTS SENT_TO            VARCHAR(256);
+
+-- Rows detected before the toolkit existed have no action to apply. Give them
+-- the same defaults the current detectors would have assigned.
+UPDATE USAGE_ANOMALIES
+   SET RECOMMENDED_ACTION = CASE ANOMALY_TYPE
+           WHEN 'IDLE_COMPUTE'        THEN IFF(CREDITS_WASTED > 0.1, 'SUSPEND_WAREHOUSE', 'SET_AUTO_SUSPEND')
+           WHEN 'COST_SPIKE'          THEN 'SET_STATEMENT_TIMEOUT'
+           WHEN 'OVERSIZED_WAREHOUSE' THEN 'SCALE_DOWN_WAREHOUSE'
+           WHEN 'LONG_RUNNING_QUERY'  THEN 'FLAG_QUERY_FOR_REVIEW'
+       END
+ WHERE RECOMMENDED_ACTION IS NULL;
+
+UPDATE USAGE_ANOMALIES
+   SET DETECTED_BY_SKILL = CASE ANOMALY_TYPE
+           WHEN 'IDLE_COMPUTE'        THEN 'cost-anomaly-detector'
+           WHEN 'COST_SPIKE'          THEN 'cost-spike-detector'
+           WHEN 'OVERSIZED_WAREHOUSE' THEN 'warehouse-optimizer'
+           WHEN 'LONG_RUNNING_QUERY'  THEN 'query-watchdog'
+       END
+ WHERE DETECTED_BY_SKILL IS NULL;
+
+UPDATE AUDIT_LOG SET APPROVAL_CHANNEL = IFF(APPROVED_BY LIKE 'FINOPS_AGENT%', 'AUTO', 'UI')
+ WHERE APPROVAL_CHANNEL IS NULL;
+
 -- ============================================================================
 -- 6. DEMO DATA
 -- ============================================================================
@@ -355,13 +418,37 @@ LANGUAGE SQL
 EXECUTE AS CALLER
 AS
 $$
+DECLARE
+    updated NUMBER DEFAULT 0;
 BEGIN
-    INSERT INTO FINOPS_GUARDIAN.PUBLIC.AGENT_EXECUTION_LOG
-        (RUN_ID, SKILL_NAME, STEP_NUMBER, STEP_DESCRIPTION, RESULT_SUMMARY, STATUS, COMPLETED_AT, ANOMALY_ID)
-    SELECT :P_RUN_ID, :P_SKILL, :P_STEP, :P_DESC, :P_RESULT, :P_STATUS,
-           CASE WHEN :P_STATUS = 'RUNNING' THEN NULL ELSE CURRENT_TIMESTAMP() END,
-           :P_ANOMALY_ID;
-    RETURN 'OK';
+    -- A step is opened as RUNNING and closed in place. Keeping one row per
+    -- (RUN_ID, STEP_NUMBER) is what lets the dashboard tell a live run from a
+    -- finished one, and gives a real elapsed time rather than zero.
+    IF (P_STATUS = 'RUNNING') THEN
+        INSERT INTO FINOPS_GUARDIAN.PUBLIC.AGENT_EXECUTION_LOG
+            (RUN_ID, SKILL_NAME, STEP_NUMBER, STEP_DESCRIPTION, RESULT_SUMMARY, STATUS, ANOMALY_ID)
+        SELECT :P_RUN_ID, :P_SKILL, :P_STEP, :P_DESC, :P_RESULT, 'RUNNING', :P_ANOMALY_ID;
+        RETURN 'OPENED';
+    END IF;
+
+    UPDATE FINOPS_GUARDIAN.PUBLIC.AGENT_EXECUTION_LOG
+       SET STATUS           = :P_STATUS,
+           STEP_DESCRIPTION = :P_DESC,
+           RESULT_SUMMARY   = :P_RESULT,
+           COMPLETED_AT     = CURRENT_TIMESTAMP(),
+           DURATION_MS      = DATEDIFF('millisecond', EXECUTED_AT, CURRENT_TIMESTAMP()),
+           ANOMALY_ID       = COALESCE(:P_ANOMALY_ID, ANOMALY_ID)
+     WHERE RUN_ID = :P_RUN_ID AND STEP_NUMBER = :P_STEP;
+    updated := SQLROWCOUNT;
+
+    -- Some steps report only their outcome and were never opened.
+    IF (updated = 0) THEN
+        INSERT INTO FINOPS_GUARDIAN.PUBLIC.AGENT_EXECUTION_LOG
+            (RUN_ID, SKILL_NAME, STEP_NUMBER, STEP_DESCRIPTION, RESULT_SUMMARY, STATUS, COMPLETED_AT, DURATION_MS, ANOMALY_ID)
+        SELECT :P_RUN_ID, :P_SKILL, :P_STEP, :P_DESC, :P_RESULT, :P_STATUS, CURRENT_TIMESTAMP(), 0, :P_ANOMALY_ID;
+    END IF;
+
+    RETURN 'CLOSED';
 END;
 $$;
 
@@ -399,19 +486,19 @@ DECLARE
     idle_hours  NUMBER DEFAULT 0;
     inserted    NUMBER DEFAULT 0;
 BEGIN
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Load warehouse metering window', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Load warehouse metering window', NULL, 'RUNNING', NULL);
     SELECT COUNT(*) INTO :rows_seen FROM FINOPS_GUARDIAN.PUBLIC.WAREHOUSE_METERING_TEST;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Load warehouse metering window',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Load warehouse metering window',
         :rows_seen || ' metering rows in scope', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 2, 'Isolate hours billing cloud services with zero compute', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 2, 'Isolate hours billing cloud services with zero compute', NULL, 'RUNNING', NULL);
     SELECT COUNT(*) INTO :idle_hours
     FROM FINOPS_GUARDIAN.PUBLIC.WAREHOUSE_METERING_TEST
     WHERE CREDITS_USED_COMPUTE = 0 AND CREDITS_USED_CLOUD_SERVICES > 0;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 2, 'Isolate hours billing cloud services with zero compute',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 2, 'Isolate hours billing cloud services with zero compute',
         :idle_hours || ' idle warehouse-hours identified', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 3, 'Score severity, pick remediation and persist new anomalies', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 3, 'Score severity, pick remediation and persist new anomalies', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES (
         WAREHOUSE_NAME, ANOMALY_START, ANOMALY_END, ANOMALY_TYPE, SEVERITY,
         CREDITS_WASTED, DESCRIPTION, SUGGESTED_FIX, RECOMMENDED_ACTION, DETECTED_BY_SKILL
@@ -440,19 +527,19 @@ BEGIN
             AND a.ANOMALY_START = m.START_TIME
             AND a.ANOMALY_TYPE = 'IDLE_COMPUTE');
     inserted := SQLROWCOUNT;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 3, 'Score severity, pick remediation and persist new anomalies',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 3, 'Score severity, pick remediation and persist new anomalies',
         :inserted || ' new anomalies written (' || (:idle_hours - :inserted) || ' already known)', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 4, 'Record scan in audit trail', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 4, 'Record scan in audit trail', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.AUDIT_LOG (ACTION_TYPE, ACTION_DETAILS, STATUS)
     SELECT 'DETECTION',
            'cost-anomaly-detector scan complete. Idle hours seen: ' || :idle_hours || '. New anomalies: ' || :inserted,
            'COMPLETED';
     IF (inserted > 0) THEN
-        CALL NOTIFY('WARNING', 'Idle compute detected',
+        CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('WARNING', 'Idle compute detected',
             :inserted || ' warehouse-hours were billing cloud services with no queries running.', NULL, NULL);
     END IF;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 4, 'Record scan in audit trail', 'Audit entry written', 'COMPLETED', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 4, 'Record scan in audit trail', 'Audit entry written', 'COMPLETED', NULL);
 
     RETURN run_id;
 END;
@@ -470,12 +557,12 @@ DECLARE
     inserted NUMBER DEFAULT 0;
     wh_count NUMBER DEFAULT 0;
 BEGIN
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Build trailing 3-hour rolling average per warehouse', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Build trailing 3-hour rolling average per warehouse', NULL, 'RUNNING', NULL);
     SELECT COUNT(DISTINCT WAREHOUSE_NAME) INTO :wh_count FROM FINOPS_GUARDIAN.PUBLIC.WAREHOUSE_METERING_TEST;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Build trailing 3-hour rolling average per warehouse',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Build trailing 3-hour rolling average per warehouse',
         'Baseline computed for ' || :wh_count || ' warehouses', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 2,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 2,
         'Flag hours exceeding ' || :SPIKE_THRESHOLD || 'x baseline', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES (
         WAREHOUSE_NAME, ANOMALY_START, ANOMALY_END, ANOMALY_TYPE, SEVERITY,
@@ -515,20 +602,20 @@ BEGIN
             AND a.ANOMALY_START = m.START_TIME
             AND a.ANOMALY_TYPE = 'COST_SPIKE');
     inserted := SQLROWCOUNT;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 2,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 2,
         'Flag hours exceeding ' || :SPIKE_THRESHOLD || 'x baseline',
         :inserted || ' spikes recorded', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 3, 'Record scan in audit trail', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 3, 'Record scan in audit trail', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.AUDIT_LOG (ACTION_TYPE, ACTION_DETAILS, STATUS)
     SELECT 'DETECTION',
            'cost-spike-detector scan complete. Threshold: ' || :SPIKE_THRESHOLD || 'x. New anomalies: ' || :inserted,
            'COMPLETED';
     IF (inserted > 0) THEN
-        CALL NOTIFY('WARNING', 'Cost spike detected',
+        CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('WARNING', 'Cost spike detected',
             :inserted || ' warehouse-hours exceeded ' || :SPIKE_THRESHOLD || 'x their rolling baseline.', NULL, NULL);
     END IF;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 3, 'Record scan in audit trail', 'Audit entry written', 'COMPLETED', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 3, 'Record scan in audit trail', 'Audit entry written', 'COMPLETED', NULL);
 
     RETURN run_id;
 END;
@@ -546,12 +633,12 @@ DECLARE
     inserted NUMBER DEFAULT 0;
     examined NUMBER DEFAULT 0;
 BEGIN
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Read provisioned size and capacity per warehouse', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Read provisioned size and capacity per warehouse', NULL, 'RUNNING', NULL);
     SELECT COUNT(*) INTO :examined FROM FINOPS_GUARDIAN.PUBLIC.WAREHOUSE_CONFIG_TEST WHERE NEXT_SIZE_DOWN IS NOT NULL;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Read provisioned size and capacity per warehouse',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Read provisioned size and capacity per warehouse',
         :examined || ' warehouses eligible for downsizing', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 2,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 2,
         'Compare peak hourly draw against capacity (floor ' || :UTILISATION_FLOOR || ')', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES (
         WAREHOUSE_NAME, ANOMALY_START, ANOMALY_END, ANOMALY_TYPE, SEVERITY,
@@ -592,18 +679,18 @@ BEGIN
             AND a.ANOMALY_TYPE = 'OVERSIZED_WAREHOUSE'
             AND a.STATUS IN ('OPEN', 'ACKNOWLEDGED'));
     inserted := SQLROWCOUNT;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 2,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 2,
         'Compare peak hourly draw against capacity (floor ' || :UTILISATION_FLOOR || ')',
         :inserted || ' over-provisioned warehouses found', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 3, 'Queue downsize recommendations for approval', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 3, 'Queue downsize recommendations for approval', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.AUDIT_LOG (ACTION_TYPE, ACTION_DETAILS, STATUS)
     SELECT 'DETECTION', 'warehouse-optimizer scan complete. Over-provisioned warehouses: ' || :inserted, 'COMPLETED';
     IF (inserted > 0) THEN
-        CALL NOTIFY('WARNING', 'Over-provisioned warehouse found',
+        CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('WARNING', 'Over-provisioned warehouse found',
             :inserted || ' warehouse(s) are running a size larger than their peak demand justifies.', NULL, NULL);
     END IF;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 3, 'Queue downsize recommendations for approval',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 3, 'Queue downsize recommendations for approval',
         'Recommendations queued', 'COMPLETED', NULL);
 
     RETURN run_id;
@@ -622,12 +709,12 @@ DECLARE
     inserted NUMBER DEFAULT 0;
     scanned  NUMBER DEFAULT 0;
 BEGIN
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Scan query history for in-flight and recent statements', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Scan query history for in-flight and recent statements', NULL, 'RUNNING', NULL);
     SELECT COUNT(*) INTO :scanned FROM FINOPS_GUARDIAN.PUBLIC.QUERY_HISTORY_TEST;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Scan query history for in-flight and recent statements',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Scan query history for in-flight and recent statements',
         :scanned || ' queries scanned', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 2,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 2,
         'Flag queries running longer than ' || :MAX_RUNTIME_SECONDS || 's', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES (
         WAREHOUSE_NAME, ANOMALY_START, ANOMALY_END, ANOMALY_TYPE, SEVERITY,
@@ -656,19 +743,19 @@ BEGIN
           SELECT 1 FROM FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES a
           WHERE a.QUERY_ID = q.QUERY_ID AND a.ANOMALY_TYPE = 'LONG_RUNNING_QUERY');
     inserted := SQLROWCOUNT;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 2,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 2,
         'Flag queries running longer than ' || :MAX_RUNTIME_SECONDS || 's',
         :inserted || ' long-running queries flagged', 'COMPLETED', NULL);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 3, 'Attribute each query to its user and role', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 3, 'Attribute each query to its user and role', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.AUDIT_LOG (ACTION_TYPE, ACTION_DETAILS, STATUS)
     SELECT 'DETECTION', 'query-watchdog scan complete. Runtime budget: ' || :MAX_RUNTIME_SECONDS ||
         's. Queries flagged: ' || :inserted, 'COMPLETED';
     IF (inserted > 0) THEN
-        CALL NOTIFY('WARNING', 'Long-running queries flagged',
+        CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('WARNING', 'Long-running queries flagged',
             :inserted || ' queries exceeded the ' || :MAX_RUNTIME_SECONDS || 's runtime budget.', NULL, NULL);
     END IF;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 3, 'Attribute each query to its user and role',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 3, 'Attribute each query to its user and role',
         'Owner and role attached to every finding', 'COMPLETED', NULL);
 
     RETURN run_id;
@@ -687,7 +774,7 @@ DECLARE
     skill    VARCHAR DEFAULT 'cost-anomaly-detector';
     inserted NUMBER DEFAULT 0;
 BEGIN
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1,
         'Scan ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY over ' || :LOOKBACK_HOURS || 'h', NULL, 'RUNNING', NULL);
     INSERT INTO FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES (
         WAREHOUSE_NAME, ANOMALY_START, ANOMALY_END, ANOMALY_TYPE, SEVERITY,
@@ -717,7 +804,7 @@ BEGIN
             AND a.ANOMALY_START = h.START_TIME
             AND a.ANOMALY_TYPE = 'IDLE_COMPUTE');
     inserted := SQLROWCOUNT;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1,
         'Scan ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY over ' || :LOOKBACK_HOURS || 'h',
         :inserted || ' new anomalies written', 'COMPLETED', NULL);
 
@@ -781,7 +868,7 @@ BEGIN
     v_sql := REPLACE(REPLACE(:v_template, '{WH}', :v_wh), '{PARAM}', :v_param);
 
     IF (P_RUN_ID IS NOT NULL) THEN
-        CALL LOG_AGENT_STEP(:P_RUN_ID, :v_skill, :P_STEP,
+        CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:P_RUN_ID, :v_skill, :P_STEP,
             'Apply "' || :v_display || '" to ' || :v_wh, NULL, 'RUNNING', :P_ANOMALY_ID);
     END IF;
 
@@ -820,13 +907,13 @@ BEGIN
         UPDATE FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES
            SET STATUS = 'RESOLVED', RESOLVED_AT = CURRENT_TIMESTAMP(), RESOLVED_BY = :P_ACTOR
          WHERE ANOMALY_ID = :P_ANOMALY_ID;
-        CALL NOTIFY('APPROVED', :v_display || ' applied', :v_detail, :v_wh, :P_ANOMALY_ID);
+        CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('APPROVED', :v_display || ' applied', :v_detail, :v_wh, :P_ANOMALY_ID);
     ELSE
-        CALL NOTIFY('WARNING', :v_display || ' failed', :v_detail, :v_wh, :P_ANOMALY_ID);
+        CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('WARNING', :v_display || ' failed', :v_detail, :v_wh, :P_ANOMALY_ID);
     END IF;
 
     IF (P_RUN_ID IS NOT NULL) THEN
-        CALL LOG_AGENT_STEP(:P_RUN_ID, :v_skill, :P_STEP,
+        CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:P_RUN_ID, :v_skill, :P_STEP,
             'Apply "' || :v_display || '" to ' || :v_wh, :v_detail,
             CASE WHEN :v_status = 'FAILED' THEN 'FAILED' ELSE 'COMPLETED' END, :P_ANOMALY_ID);
     END IF;
@@ -850,6 +937,17 @@ DECLARE
     step_no     NUMBER  DEFAULT 2;
     v_sql       VARCHAR;
     v_detail    VARCHAR;
+    -- Snowflake Scripting cannot reference rec.COLUMN inside a SQL statement,
+    -- only in expressions, so each row is copied into locals first.
+    v_id        NUMBER;
+    v_wh        VARCHAR;
+    v_sev       VARCHAR;
+    v_param     VARCHAR;
+    v_action    VARCHAR;
+    v_template  VARCHAR;
+    v_display   VARCHAR;
+    v_risk      VARCHAR;
+    v_needs_ok  BOOLEAN;
     cur CURSOR FOR
         SELECT a.ANOMALY_ID, a.WAREHOUSE_NAME, a.ANOMALY_TYPE, a.SEVERITY,
                COALESCE(a.ACTION_PARAM, '') AS ACTION_PARAM,
@@ -861,41 +959,49 @@ DECLARE
         WHERE a.STATUS = 'OPEN'
         ORDER BY a.ANOMALY_ID;
 BEGIN
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Load open anomalies and match each to the remediation toolkit', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Load open anomalies and match each to the remediation toolkit', NULL, 'RUNNING', NULL);
     SELECT COUNT(*) INTO :open_count FROM FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES WHERE STATUS = 'OPEN';
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Load open anomalies and match each to the remediation toolkit',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Load open anomalies and match each to the remediation toolkit',
         :open_count || ' open anomalies to triage', 'COMPLETED', NULL);
 
     FOR rec IN cur DO
-        IF (rec.REQUIRES_APPROVAL OR rec.SEVERITY IN ('HIGH', 'CRITICAL')) THEN
+        v_id       := rec.ANOMALY_ID;
+        v_wh       := rec.WAREHOUSE_NAME;
+        v_sev      := rec.SEVERITY;
+        v_param    := rec.ACTION_PARAM;
+        v_action   := rec.RECOMMENDED_ACTION;
+        v_template := rec.SQL_TEMPLATE;
+        v_display  := rec.DISPLAY_NAME;
+        v_risk     := rec.RISK_LEVEL;
+        v_needs_ok := rec.REQUIRES_APPROVAL;
+
+        IF (v_needs_ok OR v_sev IN ('HIGH', 'CRITICAL')) THEN
             -- Queue for a human. The rendered SQL is stored so the approver
             -- sees exactly what will run, in the UI and in the email.
-            v_sql := REPLACE(REPLACE(rec.SQL_TEMPLATE, '{WH}', rec.WAREHOUSE_NAME), '{PARAM}', rec.ACTION_PARAM);
-            v_detail := rec.DISPLAY_NAME || ' proposed for ' || rec.WAREHOUSE_NAME ||
-                        ' (' || rec.SEVERITY || ' severity, ' || rec.RISK_LEVEL || ' risk). Awaiting human approval.';
+            v_sql := REPLACE(REPLACE(:v_template, '{WH}', :v_wh), '{PARAM}', :v_param);
+            v_detail := :v_display || ' proposed for ' || :v_wh ||
+                        ' (' || :v_sev || ' severity, ' || :v_risk || ' risk). Awaiting human approval.';
 
             UPDATE FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES
-               SET STATUS = 'ACKNOWLEDGED' WHERE ANOMALY_ID = rec.ANOMALY_ID;
+               SET STATUS = 'ACKNOWLEDGED' WHERE ANOMALY_ID = :v_id;
 
             INSERT INTO FINOPS_GUARDIAN.PUBLIC.AUDIT_LOG
                 (ACTION_TYPE, ANOMALY_ID, WAREHOUSE_NAME, ACTION_DETAILS, SQL_EXECUTED, STATUS, APPROVAL_CHANNEL)
-            SELECT 'RECOMMENDATION', rec.ANOMALY_ID, rec.WAREHOUSE_NAME, :v_detail, :v_sql, 'PENDING_APPROVAL', 'UI';
+            SELECT 'RECOMMENDATION', :v_id, :v_wh, :v_detail, :v_sql, 'PENDING_APPROVAL', 'UI';
 
-            CALL NOTIFY('APPROVAL_NEEDED', rec.DISPLAY_NAME || ' needs approval', :v_detail,
-                        rec.WAREHOUSE_NAME, rec.ANOMALY_ID);
-            CALL LOG_AGENT_STEP(:run_id, :skill, :step_no,
-                'Queue "' || rec.DISPLAY_NAME || '" on ' || rec.WAREHOUSE_NAME || ' for approval',
-                'Pending human approval - ' || rec.RISK_LEVEL || ' risk action', 'COMPLETED', rec.ANOMALY_ID);
+            CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('APPROVAL_NEEDED', :v_display || ' needs approval', :v_detail, :v_wh, :v_id);
+            CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, :step_no,
+                'Queue "' || :v_display || '" on ' || :v_wh || ' for approval',
+                'Pending human approval - ' || :v_risk || ' risk action', 'COMPLETED', :v_id);
             queued := queued + 1;
         ELSE
-            CALL EXECUTE_REMEDIATION(rec.ANOMALY_ID, rec.RECOMMENDED_ACTION,
-                                     'FINOPS_AGENT (auto)', 'AUTO', :run_id, :step_no);
+            CALL FINOPS_GUARDIAN.PUBLIC.EXECUTE_REMEDIATION(:v_id, :v_action, 'FINOPS_AGENT (auto)', 'AUTO', :run_id, :step_no);
             auto_count := auto_count + 1;
         END IF;
         step_no := step_no + 1;
     END FOR;
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, :step_no, 'Summarise remediation run',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, :step_no, 'Summarise remediation run',
         :auto_count || ' auto-applied, ' || :queued || ' queued for approval', 'COMPLETED', NULL);
 
     RETURN run_id;
@@ -926,7 +1032,7 @@ BEGIN
         RETURN 'No pending approval found for anomaly ' || :P_ANOMALY_ID;
     END IF;
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1,
         'Validate approval for anomaly #' || :P_ANOMALY_ID, NULL, 'RUNNING', :P_ANOMALY_ID);
 
     IF (P_ACTION_OVERRIDE IS NOT NULL AND P_ACTION_OVERRIDE <> '') THEN
@@ -942,11 +1048,11 @@ BEGIN
        SET STATUS = 'COMPLETED', APPROVED_BY = :P_APPROVED_BY, APPROVAL_CHANNEL = :P_CHANNEL
      WHERE ANOMALY_ID = :P_ANOMALY_ID AND STATUS = 'PENDING_APPROVAL';
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1,
         'Validate approval for anomaly #' || :P_ANOMALY_ID,
         'Approved by ' || :P_APPROVED_BY || ' via ' || :P_CHANNEL, 'COMPLETED', :P_ANOMALY_ID);
 
-    CALL EXECUTE_REMEDIATION(:P_ANOMALY_ID, :v_action, :P_APPROVED_BY, :P_CHANNEL, :run_id, 2);
+    CALL FINOPS_GUARDIAN.PUBLIC.EXECUTE_REMEDIATION(:P_ANOMALY_ID, :v_action, :P_APPROVED_BY, :P_CHANNEL, :run_id, 2);
 
     -- Any token still outstanding for this anomaly is now spent.
     UPDATE FINOPS_GUARDIAN.PUBLIC.APPROVAL_TOKENS
@@ -984,7 +1090,7 @@ BEGIN
     SELECT WAREHOUSE_NAME INTO :v_wh
       FROM FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES WHERE ANOMALY_ID = :P_ANOMALY_ID;
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1,
         'Reject proposed remediation for anomaly #' || :P_ANOMALY_ID, NULL, 'RUNNING', :P_ANOMALY_ID);
 
     UPDATE FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES
@@ -1006,11 +1112,11 @@ BEGIN
        SET USED = TRUE, USED_AT = CURRENT_TIMESTAMP(), USED_BY = :P_REJECTED_BY
      WHERE ANOMALY_ID = :P_ANOMALY_ID AND USED = FALSE;
 
-    CALL NOTIFY('REJECTED', 'Remediation rejected',
+    CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('REJECTED', 'Remediation rejected',
         'Anomaly ' || :P_ANOMALY_ID || ' on ' || :v_wh || ' was rejected by ' || :P_REJECTED_BY ||
         ' via ' || :P_CHANNEL || '.', :v_wh, :P_ANOMALY_ID);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1,
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1,
         'Reject proposed remediation for anomaly #' || :P_ANOMALY_ID,
         'Rejected by ' || :P_REJECTED_BY || ' via ' || :P_CHANNEL, 'COMPLETED', :P_ANOMALY_ID);
 
@@ -1077,17 +1183,22 @@ BEGIN
         RETURN 'INVALID: token action mismatch';
     END IF;
 
+    -- Act first, burn the token second. If the remediation throws, the link
+    -- stays valid so the reviewer can retry rather than being locked out of a
+    -- decision they never actually made. APPROVE_FIX and REJECT_FIX are both
+    -- no-ops once the anomaly has left PENDING_APPROVAL, so the ordering
+    -- cannot double-apply.
+    IF (v_action = 'APPROVE') THEN
+        CALL FINOPS_GUARDIAN.PUBLIC.APPROVE_FIX(:v_anomaly, :P_ACTOR, 'EMAIL', NULL);
+    ELSE
+        CALL FINOPS_GUARDIAN.PUBLIC.REJECT_FIX(:v_anomaly, :P_ACTOR, 'EMAIL');
+    END IF;
+
     UPDATE FINOPS_GUARDIAN.PUBLIC.APPROVAL_TOKENS
        SET USED = TRUE, USED_AT = CURRENT_TIMESTAMP(), USED_BY = :P_ACTOR
      WHERE TOKEN_ID = :P_TOKEN;
 
-    IF (v_action = 'APPROVE') THEN
-        CALL FINOPS_GUARDIAN.PUBLIC.APPROVE_FIX(:v_anomaly, :P_ACTOR, 'EMAIL', NULL);
-        RETURN 'APPROVED:' || :v_anomaly;
-    ELSE
-        CALL FINOPS_GUARDIAN.PUBLIC.REJECT_FIX(:v_anomaly, :P_ACTOR, 'EMAIL');
-        RETURN 'REJECTED:' || :v_anomaly;
-    END IF;
+    RETURN IFF(:v_action = 'APPROVE', 'APPROVED:', 'REJECTED:') || :v_anomaly;
 END;
 $$;
 
@@ -1144,14 +1255,17 @@ BEGIN
     -- Query params must sit before the Snowsight fragment to survive the redirect.
     v_base := SPLIT_PART(:v_app, '#', 1);
     v_frag := SPLIT_PART(:v_app, '#', 2);
-    v_url_a := :v_base || '?token=' || :v_approve || '&action=approve' || IFF(:v_frag = '', '', '#' || :v_frag);
-    v_url_r := :v_base || '?token=' || :v_reject  || '&action=reject'  || IFF(:v_frag = '', '', '#' || :v_frag);
+    -- CHR(38) emits a literal ampersand. Written this way because the
+    -- Snowflake CLI reads a bare ampersand-prefixed word in this file as a
+    -- SnowSQL template variable when the script is run with -f.
+    v_url_a := :v_base || '?token=' || :v_approve || CHR(38) || 'action=approve' || IFF(:v_frag = '', '', '#' || :v_frag);
+    v_url_r := :v_base || '?token=' || :v_reject  || CHR(38) || 'action=reject'  || IFF(:v_frag = '', '', '#' || :v_frag);
 
     v_body :=
         '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:600px;">' ||
-        '<h2 style="color:#1a1a2e;margin-bottom:4px;">FinOps Guardian &mdash; approval required</h2>' ||
-        '<p style="color:#6B7280;margin-top:0;">Anomaly #' || :P_ANOMALY_ID || ' &middot; ' || :v_type ||
-        ' &middot; <strong style="color:#DC2626;">' || :v_sev || '</strong></p>' ||
+        '<h2 style="color:#1a1a2e;margin-bottom:4px;">FinOps Guardian - approval required</h2>' ||
+        '<p style="color:#6B7280;margin-top:0;">Anomaly #' || :P_ANOMALY_ID || ' | ' || :v_type ||
+        ' | <strong style="color:#DC2626;">' || :v_sev || '</strong></p>' ||
         '<table style="border-collapse:collapse;width:100%;margin:16px 0;">' ||
         '<tr><td style="padding:6px 0;color:#6B7280;">Warehouse</td><td style="padding:6px 0;"><strong>' || :v_wh || '</strong></td></tr>' ||
         '<tr><td style="padding:6px 0;color:#6B7280;">Credits at risk</td><td style="padding:6px 0;"><strong>' ||
@@ -1162,7 +1276,7 @@ BEGIN
         '<pre style="background:#F3F4F6;padding:12px;border-radius:8px;font-size:13px;white-space:pre-wrap;">' || :v_sql || '</pre>' ||
         '<p style="margin:24px 0;">' ||
         '<a href="' || :v_url_a || '" style="background:#16A34A;color:#fff;padding:12px 24px;border-radius:8px;' ||
-            'text-decoration:none;font-weight:600;margin-right:12px;">Approve &amp; apply</a>' ||
+            'text-decoration:none;font-weight:600;margin-right:12px;">Approve and apply</a>' ||
         '<a href="' || :v_url_r || '" style="background:#DC2626;color:#fff;padding:12px 24px;border-radius:8px;' ||
             'text-decoration:none;font-weight:600;">Reject</a>' ||
         '</p>' ||
@@ -1205,6 +1319,7 @@ AS
 $$
 DECLARE
     sent NUMBER DEFAULT 0;
+    v_id NUMBER;
     cur CURSOR FOR
         SELECT DISTINCT a.ANOMALY_ID
         FROM FINOPS_GUARDIAN.PUBLIC.USAGE_ANOMALIES a
@@ -1219,7 +1334,8 @@ DECLARE
                 AND t.EXPIRES_AT > CURRENT_TIMESTAMP());
 BEGIN
     FOR rec IN cur DO
-        CALL FINOPS_GUARDIAN.PUBLIC.SEND_APPROVAL_EMAIL(rec.ANOMALY_ID, NULL);
+        v_id := rec.ANOMALY_ID;
+        CALL FINOPS_GUARDIAN.PUBLIC.SEND_APPROVAL_EMAIL(:v_id, NULL);
         sent := sent + 1;
     END FOR;
     RETURN 'Approval emails dispatched: ' || :sent;
@@ -1245,6 +1361,12 @@ DECLARE
     v_value  NUMBER  DEFAULT 0;
     v_hit    BOOLEAN DEFAULT FALSE;
     step_no  NUMBER  DEFAULT 2;
+    v_id     NUMBER;
+    v_rule   VARCHAR;
+    v_metric VARCHAR;
+    v_thresh NUMBER;
+    v_wh     VARCHAR;
+    v_cond   VARCHAR;
     cur CURSOR FOR
         SELECT ALERT_ID, NATURAL_LANGUAGE_RULE, PARSED_METRIC, PARSED_THRESHOLD,
                COALESCE(PARSED_WAREHOUSE, 'ANY') AS PARSED_WAREHOUSE, PARSED_CONDITION
@@ -1255,14 +1377,21 @@ BEGIN
       FROM FINOPS_GUARDIAN.PUBLIC.AGENT_CONFIG WHERE CONFIG_KEY = 'CREDIT_RATE';
     rate := COALESCE(:rate, 3.00);
 
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Load active natural-language alert rules', NULL, 'RUNNING', NULL);
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Load active natural-language alert rules', NULL, 'RUNNING', NULL);
     SELECT COUNT(*) INTO :checked FROM FINOPS_GUARDIAN.PUBLIC.SMART_ALERTS WHERE IS_ACTIVE = TRUE;
-    CALL LOG_AGENT_STEP(:run_id, :skill, 1, 'Load active natural-language alert rules',
+    CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, 1, 'Load active natural-language alert rules',
         :checked || ' active rules', 'COMPLETED', NULL);
 
     FOR rec IN cur DO
+        v_id     := rec.ALERT_ID;
+        v_rule   := rec.NATURAL_LANGUAGE_RULE;
+        v_metric := rec.PARSED_METRIC;
+        v_thresh := rec.PARSED_THRESHOLD;
+        v_wh     := rec.PARSED_WAREHOUSE;
+        v_cond   := rec.PARSED_CONDITION;
+
         SELECT COALESCE(MAX(V), 0) INTO :v_value FROM (
-            SELECT CASE rec.PARSED_METRIC
+            SELECT CASE :v_metric
                 WHEN 'daily_spend'      THEN SUM(m.CREDITS_USED) * :rate
                 WHEN 'weekly_spend'     THEN SUM(m.CREDITS_USED) * :rate
                 WHEN 'credits_per_hour' THEN MAX(m.CREDITS_USED)
@@ -1270,33 +1399,33 @@ BEGIN
                 ELSE SUM(m.CREDITS_USED) * :rate
             END AS V
             FROM FINOPS_GUARDIAN.PUBLIC.WAREHOUSE_METERING_TEST m
-            WHERE (rec.PARSED_WAREHOUSE = 'ANY' OR m.WAREHOUSE_NAME = rec.PARSED_WAREHOUSE)
+            WHERE (:v_wh = 'ANY' OR m.WAREHOUSE_NAME = :v_wh)
             GROUP BY m.WAREHOUSE_NAME
         );
 
-        v_hit := CASE rec.PARSED_CONDITION
-                     WHEN 'greater_than' THEN :v_value >  rec.PARSED_THRESHOLD
-                     WHEN 'less_than'    THEN :v_value <  rec.PARSED_THRESHOLD
-                     ELSE ABS(:v_value - rec.PARSED_THRESHOLD) < 0.0001
+        v_hit := CASE :v_cond
+                     WHEN 'greater_than' THEN :v_value >  :v_thresh
+                     WHEN 'less_than'    THEN :v_value <  :v_thresh
+                     ELSE ABS(:v_value - :v_thresh) < 0.0001
                  END;
 
         IF (v_hit) THEN
             UPDATE FINOPS_GUARDIAN.PUBLIC.SMART_ALERTS
                SET TRIGGER_COUNT = TRIGGER_COUNT + 1, LAST_TRIGGERED_AT = CURRENT_TIMESTAMP()
-             WHERE ALERT_ID = rec.ALERT_ID;
-            CALL NOTIFY('WARNING', 'Smart alert triggered',
-                'Rule "' || rec.NATURAL_LANGUAGE_RULE || '" tripped: ' || rec.PARSED_METRIC ||
+             WHERE ALERT_ID = :v_id;
+            CALL FINOPS_GUARDIAN.PUBLIC.NOTIFY('WARNING', 'Smart alert triggered',
+                'Rule "' || :v_rule || '" tripped: ' || :v_metric ||
                 ' reached ' || ROUND(:v_value, 2)::VARCHAR || ' against a threshold of ' ||
-                rec.PARSED_THRESHOLD::VARCHAR || '.',
-                IFF(rec.PARSED_WAREHOUSE = 'ANY', NULL, rec.PARSED_WAREHOUSE), NULL);
+                :v_thresh::VARCHAR || '.',
+                IFF(:v_wh = 'ANY', NULL, :v_wh), NULL);
             tripped := tripped + 1;
-            CALL LOG_AGENT_STEP(:run_id, :skill, :step_no,
-                'Evaluate rule: ' || LEFT(rec.NATURAL_LANGUAGE_RULE, 120),
-                'TRIPPED - ' || rec.PARSED_METRIC || ' = ' || ROUND(:v_value, 2)::VARCHAR, 'COMPLETED', NULL);
+            CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, :step_no,
+                'Evaluate rule: ' || LEFT(:v_rule, 120),
+                'TRIPPED - ' || :v_metric || ' = ' || ROUND(:v_value, 2)::VARCHAR, 'COMPLETED', NULL);
         ELSE
-            CALL LOG_AGENT_STEP(:run_id, :skill, :step_no,
-                'Evaluate rule: ' || LEFT(rec.NATURAL_LANGUAGE_RULE, 120),
-                'within threshold - ' || rec.PARSED_METRIC || ' = ' || ROUND(:v_value, 2)::VARCHAR, 'COMPLETED', NULL);
+            CALL FINOPS_GUARDIAN.PUBLIC.LOG_AGENT_STEP(:run_id, :skill, :step_no,
+                'Evaluate rule: ' || LEFT(:v_rule, 120),
+                'within threshold - ' || :v_metric || ' = ' || ROUND(:v_value, 2)::VARCHAR, 'COMPLETED', NULL);
         END IF;
         step_no := step_no + 1;
     END FOR;
@@ -1353,7 +1482,10 @@ CREATE STAGE IF NOT EXISTS STREAMLIT_STAGE
 --   PUT 'file://./streamlit_app.py' @FINOPS_GUARDIAN.PUBLIC.STREAMLIT_STAGE/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
 --   PUT 'file://./.streamlit/config.toml' @FINOPS_GUARDIAN.PUBLIC.STREAMLIT_STAGE/.streamlit/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
 
-CREATE OR REPLACE STREAMLIT FINOPS_GUARDIAN_APP
+-- IF NOT EXISTS, never OR REPLACE: replacing a Streamlit object rotates its
+-- url_id, which changes the app URL and invalidates every approval link
+-- already sitting in someone's inbox.
+CREATE STREAMLIT IF NOT EXISTS FINOPS_GUARDIAN_APP
     ROOT_LOCATION = '@FINOPS_GUARDIAN.PUBLIC.STREAMLIT_STAGE'
     MAIN_FILE = 'streamlit_app.py'
     QUERY_WAREHOUSE = COMPUTE_WH

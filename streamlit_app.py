@@ -588,10 +588,10 @@ def render_trace_step(step_no, description, result, status, duration_ms=None):
 def fetch_run_steps(run_id):
     return run_query(
         f"""SELECT STEP_NUMBER, STEP_DESCRIPTION, RESULT_SUMMARY, STATUS, SKILL_NAME,
-                   DATEDIFF('millisecond', EXECUTED_AT, COALESCE(COMPLETED_AT, CURRENT_TIMESTAMP())) AS DURATION_MS
+                   COALESCE(DURATION_MS,
+                            DATEDIFF('millisecond', EXECUTED_AT, CURRENT_TIMESTAMP())) AS DURATION_MS
             FROM {DB}.{SCHEMA}.AGENT_EXECUTION_LOG
             WHERE RUN_ID = ?
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY STEP_NUMBER ORDER BY EXEC_ID DESC) = 1
             ORDER BY STEP_NUMBER""",
         params=[run_id],
     )
@@ -1270,7 +1270,8 @@ elif "Operations" in tab_choice:
                    COUNT_IF(STATUS = 'RUNNING') AS RUNNING_STEPS,
                    COUNT_IF(STATUS = 'FAILED') AS FAILED_STEPS,
                    MAX(TRIGGERED_BY) AS TRIGGERED_BY,
-                   DATEDIFF('millisecond', MIN(EXECUTED_AT), COALESCE(MAX(COMPLETED_AT), CURRENT_TIMESTAMP())) AS ELAPSED_MS
+                   DATEDIFF('millisecond', MIN(EXECUTED_AT),
+                            COALESCE(MAX(COMPLETED_AT), CURRENT_TIMESTAMP())) AS ELAPSED_MS
             FROM {DB}.{SCHEMA}.AGENT_EXECUTION_LOG
             GROUP BY RUN_ID ORDER BY STARTED_AT DESC LIMIT 8
         """)
