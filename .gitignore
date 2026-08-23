@@ -21,3 +21,6 @@ Thumbs.db
 
 # Snowflake
 *.snow/
+
+# Snowflake CLI build output
+output/
