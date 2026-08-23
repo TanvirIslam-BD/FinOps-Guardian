@@ -854,30 +854,68 @@ elif "Operations" in tab_choice:
 
     if alert_input:
         alert_input = alert_input[:500]
-        try:
-            import json as _json
-            parse_prompt = (
-                "Parse this monitoring alert rule into JSON. Return ONLY valid JSON, no explanation.\\n"
-                "Format: {\"metric\": \"...\", \"threshold\": ..., \"warehouse\": \"...\", \"condition\": \"...\"}\\n"
-                "Valid metrics: daily_spend, weekly_spend, credits_per_hour, idle_minutes, query_count\\n"
-                "Valid conditions: greater_than, less_than, equals\\n"
-                "If no warehouse specified, use ANY.\\n\\n"
-                f"Rule: {alert_input}"
-            )
-            safe_parse = parse_prompt.replace("'", "''")
-            with st.spinner("🧠 Parsing alert rule..."):
-                parse_result = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', '{safe_parse}') AS RESPONSE")
-            raw_response = parse_result["RESPONSE"].iloc[0]
 
-            json_start = raw_response.find("{")
-            json_end = raw_response.rfind("}") + 1
-            parsed = _json.loads(raw_response[json_start:json_end])
+        # Handle activation from previous cycle
+        if st.session_state.get("_alert_activate"):
+            _act = st.session_state.pop("_alert_activate")
+            try:
+                safe_rule = _act["rule"].replace("'", "''")
+                safe_wh = _act["warehouse"].replace("'", "''")
+                session.sql(f"""
+                    INSERT INTO {DB}.{SCHEMA}.SMART_ALERTS (NATURAL_LANGUAGE_RULE, PARSED_METRIC, PARSED_THRESHOLD, PARSED_WAREHOUSE, PARSED_CONDITION)
+                    VALUES ('{safe_rule}', '{_act["metric"]}', {_act["threshold"]}, '{safe_wh}', '{_act["condition"]}')
+                """).collect()
+                st.session_state.pop("_parsed_alert", None)
+                st.session_state["alert_nl"] = ""
+                st.success("Alert activated successfully!")
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Could not activate alert: {e}")
 
-            metric = parsed.get("metric", "daily_spend")
-            threshold = float(parsed.get("threshold", 0))
-            warehouse = parsed.get("warehouse", "ANY")
-            condition = parsed.get("condition", "greater_than")
+        # Use cached parse if input unchanged
+        _cached = st.session_state.get("_parsed_alert")
+        if _cached and _cached.get("input") == alert_input:
+            metric = _cached["metric"]
+            threshold = _cached["threshold"]
+            warehouse = _cached["warehouse"]
+            condition = _cached["condition"]
+        else:
+            try:
+                import json as _json
+                parse_prompt = (
+                    "Parse this monitoring alert rule into JSON. Return ONLY valid JSON, no explanation.\\n"
+                    "Format: {\"metric\": \"...\", \"threshold\": ..., \"warehouse\": \"...\", \"condition\": \"...\"}\\n"
+                    "Valid metrics: daily_spend, weekly_spend, credits_per_hour, idle_minutes, query_count\\n"
+                    "Valid conditions: greater_than, less_than, equals\\n"
+                    "If no warehouse specified, use ANY.\\n\\n"
+                    f"Rule: {alert_input}"
+                )
+                safe_parse = parse_prompt.replace("'", "''")
+                with st.spinner("🧠 Parsing alert rule..."):
+                    parse_result = run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', '{safe_parse}') AS RESPONSE")
+                raw_response = parse_result["RESPONSE"].iloc[0]
 
+                json_start = raw_response.find("{")
+                json_end = raw_response.rfind("}") + 1
+                parsed = _json.loads(raw_response[json_start:json_end])
+
+                metric = parsed.get("metric", "daily_spend")
+                threshold = float(parsed.get("threshold", 0))
+                warehouse = parsed.get("warehouse", "ANY")
+                condition = parsed.get("condition", "greater_than")
+
+                st.session_state["_parsed_alert"] = {
+                    "input": alert_input,
+                    "metric": metric,
+                    "threshold": threshold,
+                    "warehouse": warehouse,
+                    "condition": condition,
+                }
+            except Exception as e:
+                st.error(f"Could not parse alert: {e}")
+                metric = None
+
+        if metric is not None:
             cond_symbol = ">" if condition == "greater_than" else "<" if condition == "less_than" else "="
             metric_icon = "💰" if "spend" in metric else "⏱" if "idle" in metric or "hour" in metric else "📊"
 
@@ -897,16 +935,14 @@ elif "Operations" in tab_choice:
             """, unsafe_allow_html=True)
 
             if st.button("✅ Activate Alert", type="primary", key="activate_alert"):
-                safe_rule = alert_input.replace("'", "''")
-                safe_wh = warehouse.replace("'", "''")
-                session.sql(f"""
-                    INSERT INTO {DB}.{SCHEMA}.SMART_ALERTS (NATURAL_LANGUAGE_RULE, PARSED_METRIC, PARSED_THRESHOLD, PARSED_WAREHOUSE, PARSED_CONDITION)
-                    VALUES ('{safe_rule}', '{metric}', {threshold}, '{safe_wh}', '{condition}')
-                """).collect()
-                st.success("Alert activated!")
+                st.session_state["_alert_activate"] = {
+                    "rule": alert_input,
+                    "metric": metric,
+                    "threshold": threshold,
+                    "warehouse": warehouse,
+                    "condition": condition,
+                }
                 st.experimental_rerun()
-        except Exception as e:
-            st.error(f"Could not parse alert: {e}")
 
     # Show active alerts
     try:
